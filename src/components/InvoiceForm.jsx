@@ -9,12 +9,11 @@ import InvoiceItem from "./InvoiceItem";
 import InvoiceModal from "./InvoiceModal";
 import InputGroup from "react-bootstrap/InputGroup";
 
+
 const InvoiceForm = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const [currency, setCurrency] = useState("$");
-  const [currentDate, setCurrentDate] = useState(
-    new Date().toLocaleDateString()
-  );
+  const [currency, setCurrency] = useState("₹");
+  const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString());
   const [invoiceNumber, setInvoiceNumber] = useState(1);
   const [dateOfIssue, setDateOfIssue] = useState("");
   const [billTo, setBillTo] = useState("");
@@ -23,9 +22,7 @@ const InvoiceForm = () => {
   const [billFrom, setBillFrom] = useState("");
   const [billFromEmail, setBillFromEmail] = useState("");
   const [billFromAddress, setBillFromAddress] = useState("");
-  const [notes, setNotes] = useState(
-    "Thank you for doing business with us. Have a great day!"
-  );
+  const [notes, setNotes] = useState("Have a  great day!");
   const [total, setTotal] = useState("0.00");
   const [subTotal, setSubTotal] = useState("0.00");
   const [taxRate, setTaxRate] = useState("");
@@ -45,22 +42,16 @@ const InvoiceForm = () => {
 
   const handleCalculateTotal = useCallback(() => {
     let newSubTotal = items
-      .reduce((acc, item) => {
-        return acc + parseFloat(item.price) * parseInt(item.quantity);
-      }, 0)
+      .reduce((acc, item) => acc + parseFloat(item.price) * parseInt(item.quantity), 0)
       .toFixed(2);
 
-    let newtaxAmount = (newSubTotal * (taxRate / 100)).toFixed(2);
-    let newdiscountAmount = (newSubTotal * (discountRate / 100)).toFixed(2);
-    let newTotal = (
-      newSubTotal -
-      newdiscountAmount +
-      parseFloat(newtaxAmount)
-    ).toFixed(2);
+    let newTaxAmount = (newSubTotal * (taxRate / 100)).toFixed(2);
+    let newDiscountAmount = (newSubTotal * (discountRate / 100)).toFixed(2);
+    let newTotal = (newSubTotal - newDiscountAmount + parseFloat(newTaxAmount)).toFixed(2);
 
     setSubTotal(newSubTotal);
-    setTaxAmount(newtaxAmount);
-    setDiscountAmount(newdiscountAmount);
+    setTaxAmount(newTaxAmount);
+    setDiscountAmount(newDiscountAmount);
     setTotal(newTotal);
   }, [items, taxRate, discountRate]);
 
@@ -75,24 +66,13 @@ const InvoiceForm = () => {
 
   const handleAddEvent = () => {
     const id = (+new Date() + Math.floor(Math.random() * 999999)).toString(36);
-    const newItem = {
-      id,
-      name: "",
-      price: "1.00",
-      description: "",
-      quantity: 1,
-    };
+    const newItem = { id, name: "", price: "1.00", description: "", quantity: 1 };
     setItems([...items, newItem]);
   };
 
   const onItemizedItemEdit = (evt) => {
     const { id, name, value } = evt.target;
-
-    console.log(id, name, value);
-
-    const updatedItems = items.map((item) =>
-      item.id === id ? { ...item, [name]: value } : item
-    );
+    const updatedItems = items.map((item) => item.id === id ? { ...item, [name]: value } : item);
     setItems(updatedItems);
   };
 
@@ -112,20 +92,18 @@ const InvoiceForm = () => {
   };
 
   return (
-    <Form onSubmit={openModal}>
+    <Form onSubmit={openModal} className="bg-light p-4 rounded shadow-sm">
       <Row>
         <Col md={8} lg={9}>
-          <Card className="p-4 p-xl-5 my-3 my-xl-4">
+          <Card className="p-4 p-xl-5 my-3 my-xl-4 shadow-sm border-0">
             <div className="d-flex flex-row align-items-start justify-content-between mb-3">
               <div className="d-flex flex-column">
-                <div className="d-flex flex-column">
-                  <div className="mb-2">
-                    <span className="fw-bold">Current&nbsp;Date:&nbsp;</span>
-                    <span className="current-date">{currentDate}</span>
-                  </div>
+                <div className="mb-2">
+                  <span className="fw-bold text-muted">Current Date:&nbsp;</span>
+                  <span className="text-dark fw-semibold">{currentDate}</span>
                 </div>
                 <div className="d-flex flex-row align-items-center">
-                  <span className="fw-bold d-block me-2">Due&nbsp;Date:</span>
+                  <span className="fw-bold text-muted me-2">Due Date:</span>
                   <Form.Control
                     type="date"
                     value={dateOfIssue}
@@ -137,7 +115,7 @@ const InvoiceForm = () => {
                 </div>
               </div>
               <div className="d-flex flex-row align-items-center">
-                <span className="fw-bold me-2">Invoice&nbsp;Number:&nbsp;</span>
+                <span className="fw-bold text-muted me-2">Invoice Number:</span>
                 <Form.Control
                   type="number"
                   value={invoiceNumber}
@@ -153,221 +131,69 @@ const InvoiceForm = () => {
             <Row className="mb-5">
               <Col>
                 <Form.Label className="fw-bold">Bill from:</Form.Label>
-                <Form.Control
-                  placeholder="Who is this invoice from?"
-                  rows={3}
-                  value={billFrom}
-                  type="text"
-                  name="billFrom"
-                  className="my-2"
-                  onChange={handleChange(setBillFrom)}
-                  autoComplete="name"
-                  required
-                />
-                <Form.Control
-                  placeholder="Email address"
-                  value={billFromEmail}
-                  type="email"
-                  name="billFromEmail"
-                  className="my-2"
-                  onChange={handleChange(setBillFromEmail)}
-                  autoComplete="email"
-                  required
-                />
-                <Form.Control
-                  placeholder="Billing address"
-                  value={billFromAddress}
-                  type="text"
-                  name="billFromAddress"
-                  className="my-2"
-                  autoComplete="address"
-                  onChange={handleChange(setBillFromAddress)}
-                  required
-                />
+                <Form.Control placeholder="Your name or company" value={billFrom} type="text" className="my-2" onChange={handleChange(setBillFrom)} required />
+                <Form.Control placeholder="Email address" value={billFromEmail} type="email" className="my-2" onChange={handleChange(setBillFromEmail)} required />
+                <Form.Control placeholder="Billing address" value={billFromAddress} type="text" className="my-2" onChange={handleChange(setBillFromAddress)} required />
               </Col>
               <Col>
                 <Form.Label className="fw-bold">Bill to:</Form.Label>
-                <Form.Control
-                  placeholder="Who is this invoice to?"
-                  rows={3}
-                  value={billTo}
-                  type="text"
-                  name="billTo"
-                  className="my-2"
-                  onChange={handleChange(setBillTo)}
-                  autoComplete="name"
-                  required
-                />
-                <Form.Control
-                  placeholder="Email address"
-                  value={billToEmail}
-                  type="email"
-                  name="billToEmail"
-                  className="my-2"
-                  onChange={handleChange(setBillToEmail)}
-                  autoComplete="email"
-                  required
-                />
-                <Form.Control
-                  placeholder="Billing address"
-                  value={billToAddress}
-                  type="text"
-                  name="billToAddress"
-                  className="my-2"
-                  autoComplete="address"
-                  onChange={handleChange(setBillToAddress)}
-                  required
-                />
+                <Form.Control placeholder="Client's name or company" value={billTo} type="text" className="my-2" onChange={handleChange(setBillTo)} required />
+                <Form.Control placeholder="Email address" value={billToEmail} type="email" className="my-2" onChange={handleChange(setBillToEmail)} required />
+                <Form.Control placeholder="Billing address" value={billToAddress} type="text" className="my-2" onChange={handleChange(setBillToAddress)} required />
               </Col>
             </Row>
-            <InvoiceItem
-              onItemizedItemEdit={onItemizedItemEdit}
-              onRowAdd={handleAddEvent}
-              onRowDel={handleRowDel}
-              currency={currency}
-              items={items}
-            />
+            <InvoiceItem onItemizedItemEdit={onItemizedItemEdit} onRowAdd={handleAddEvent} onRowDel={handleRowDel} currency={currency} items={items} />
             <Row className="mt-4 justify-content-end">
               <Col lg={6}>
-                <div className="d-flex flex-row align-items-start justify-content-between">
-                  <span className="fw-bold">Subtotal:</span>
-                  <span>
-                    {currency}
-                    {subTotal}
-                  </span>
-                </div>
-                <div className="d-flex flex-row align-items-start justify-content-between mt-2">
-                  <span className="fw-bold">Discount:</span>
-                  <span>
-                    <span className="small ">({discountRate || 0}%)</span>
-                    {currency}
-                    {discountAmount || 0}
-                  </span>
-                </div>
-                <div className="d-flex flex-row align-items-start justify-content-between mt-2">
-                  <span className="fw-bold">Tax:</span>
-                  <span>
-                    <span className="small ">({taxRate || 0}%)</span>
-                    {currency}
-                    {taxAmount || 0}
-                  </span>
-                </div>
+                <div className="d-flex justify-content-between py-1"><span className="fw-bold">Subtotal:</span><span>{currency}{subTotal}</span></div>
+                <div className="d-flex justify-content-between py-1"><span className="fw-bold">Discount:</span><span><small>({discountRate || 0}%)</small> {currency}{discountAmount}</span></div>
+                <div className="d-flex justify-content-between py-1"><span className="fw-bold">Tax:</span><span><small>({taxRate || 0}%)</small> {currency}{taxAmount}</span></div>
                 <hr />
-                <div
-                  className="d-flex flex-row align-items-start justify-content-between"
-                  style={{ fontSize: "1.125rem" }}
-                >
-                  <span className="fw-bold">Total:</span>
-                  <span className="fw-bold">
-                    {currency}
-                    {total || 0}
-                  </span>
-                </div>
+                <div className="d-flex justify-content-between fs-5 fw-bold"><span>Total:</span><span>{currency}{total}</span></div>
               </Col>
             </Row>
             <hr className="my-4" />
             <Form.Label className="fw-bold">Notes:</Form.Label>
-            <Form.Control
-              placeholder="Thank you for doing business with us. Have a great day!"
-              name="notes"
-              value={notes}
-              onChange={handleChange(setNotes)}
-              as="textarea"
-              className="my-2"
-              rows={1}
-            />
+            <Form.Control placeholder="Have a great day!" name="notes" value={notes} onChange={handleChange(setNotes)} as="textarea" className="my-2" rows={2} />
           </Card>
         </Col>
         <Col md={4} lg={3}>
           <div className="sticky-top pt-md-3 pt-xl-4">
-            <InvoiceModal
-              showModal={isOpen}
-              closeModal={closeModal}
-              info={{
-                dateOfIssue,
-                invoiceNumber,
-                billTo,
-                billToEmail,
-                billToAddress,
-                billFrom,
-                billFromEmail,
-                billFromAddress,
-                notes,
-              }}
-              items={items}
-              currency={currency}
-              subTotal={subTotal}
-              taxAmount={taxAmount}
-              discountAmount={discountAmount}
-              total={total}
-            />
-
+            <InvoiceModal showModal={isOpen} closeModal={closeModal} info={{ dateOfIssue, invoiceNumber, billTo, billToEmail, billToAddress, billFrom, billFromEmail, billFromAddress, notes }} items={items} currency={currency} subTotal={subTotal} taxAmount={taxAmount} discountAmount={discountAmount} total={total} />
             <Form.Group className="mb-3">
               <Form.Label className="fw-bold">Currency:</Form.Label>
               <Form.Select
-                onChange={(e) => {
-                  setCurrency(e.target.value);
-                }}
-                className="btn btn-light my-1"
-                aria-label="Change Currency"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="my-1"
               >
+                <option value="₹">INR (Indian Rupee)</option>
                 <option value="$">USD (United States Dollar)</option>
                 <option value="£">GBP (British Pound Sterling)</option>
-                <option value="₹">INR (Indian Rupee)</option>
                 <option value="¥">JPY (Japanese Yen)</option>
-                <option value="$">CAD (Canadian Dollar)</option>
-                <option value="$">AUD (Australian Dollar)</option>
-                <option value="$">SGD (Singapore Dollar)</option>
-                <option value="¥">CNY (Chinese Renminbi)</option>
+                <option value="C$">CAD (Canadian Dollar)</option>
+                <option value="A$">AUD (Australian Dollar)</option>
+                <option value="S$">SGD (Singapore Dollar)</option>
+                <option value="CN¥">CNY (Chinese Renminbi)</option>
                 <option value="₿">BTC (Bitcoin)</option>
               </Form.Select>
             </Form.Group>
             <Form.Group className="my-3">
               <Form.Label className="fw-bold">Tax rate:</Form.Label>
               <InputGroup className="my-1 flex-nowrap">
-                <Form.Control
-                  name="taxRate"
-                  type="number"
-                  value={taxRate}
-                  onChange={handleChange(setTaxRate)}
-                  className="bg-white border"
-                  placeholder="0.0"
-                  min="0.00"
-                  step="0.01"
-                  max="100.00"
-                />
-                <InputGroup.Text className="bg-light fw-bold text-secondary small">
-                  %
-                </InputGroup.Text>
+                <Form.Control name="taxRate" type="number" value={taxRate} onChange={handleChange(setTaxRate)} className="bg-white border" placeholder="0.0" min="0.00" step="0.01" max="100.00" />
+                <InputGroup.Text className="bg-light fw-bold text-secondary small">%</InputGroup.Text>
               </InputGroup>
             </Form.Group>
             <Form.Group className="my-3">
               <Form.Label className="fw-bold">Discount rate:</Form.Label>
               <InputGroup className="my-1 flex-nowrap">
-                <Form.Control
-                  name="discountRate"
-                  type="number"
-                  value={discountRate}
-                  onChange={handleChange(setDiscountRate)}
-                  className="bg-white border"
-                  placeholder="0.0"
-                  min="0.00"
-                  step="0.01"
-                  max="100.00"
-                />
-                <InputGroup.Text className="bg-light fw-bold text-secondary small">
-                  %
-                </InputGroup.Text>
+                <Form.Control name="discountRate" type="number" value={discountRate} onChange={handleChange(setDiscountRate)} className="bg-white border" placeholder="0.0" min="0.00" step="0.01" max="100.00" />
+                <InputGroup.Text className="bg-light fw-bold text-secondary small">%</InputGroup.Text>
               </InputGroup>
             </Form.Group>
             <hr className="mt-4 mb-3" />
-            <Button
-              variant="primary"
-              type="submit"
-              className="d-block w-100 btn-secondary"
-            >
-              Review Invoice
-            </Button>
+            <Button variant="primary" type="submit" className="w-100">Review Invoice</Button>
           </div>
         </Col>
       </Row>
