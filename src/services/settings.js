@@ -6,10 +6,12 @@ const DEFAULT_SETTINGS = {
   companyPhone: '',
   companyEmail: '',
   companyLogo: null,
+  gstNumber: '',
   defaultTax: 0,
   defaultCurrency: '₹',
   defaultNotes: 'Thank you for your business!',
   defaultTerms: 'Payment is due within 30 days of the invoice date.',
+  defaultInvoiceTemplate: 'corporate',
   theme: 'system', // 'light' | 'dark' | 'system'
 };
 

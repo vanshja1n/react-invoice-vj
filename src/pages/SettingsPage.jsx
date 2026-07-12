@@ -179,6 +179,15 @@ export default function SettingsPage() {
                   placeholder="123 Business Street"
                 />
               </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="s-gstNumber" className="text-xs">GST/VAT Number</Label>
+                <Input
+                  id="s-gstNumber"
+                  value={form.gstNumber || ''}
+                  onChange={(e) => updateField('gstNumber', e.target.value)}
+                  placeholder="e.g. 29ABCDE1234F1Z5"
+                />
+              </div>
             </div>
           </CardContent>
         </Card>

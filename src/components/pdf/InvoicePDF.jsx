@@ -1,4 +1,4 @@
-import { InvoiceTemplate } from '@/components/pdf/InvoiceTemplate';
+import { InvoiceTemplateRenderer } from '@/components/pdf/InvoiceTemplate';
 
 /** A4 width at 96 DPI (210 mm) */
 export const INVOICE_PDF_WIDTH_PX = 794;
@@ -28,7 +28,7 @@ export function InvoicePDF({ invoice }) {
         position: 'relative',
       }}
     >
-      <InvoiceTemplate invoice={invoice} />
+      <InvoiceTemplateRenderer invoice={invoice} />
     </div>
   );
 }

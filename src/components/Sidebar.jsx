@@ -9,6 +9,8 @@ import {
   PanelLeft,
   X,
   Receipt,
+  Package,
+  Users,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -17,7 +19,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/invoices/new', icon: FilePlus, label: 'Create Invoice' },
+  { to: '/products', icon: Package, label: 'Products' },
   { to: '/invoices', icon: FileText, label: 'Invoice History' },
+  { to: '/customers', icon: Users, label: 'Customers' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/backup', icon: HardDriveDownload, label: 'Backup & Restore' },
 ];
@@ -120,7 +124,7 @@ export function Sidebar({ collapsed = false, onToggleCollapse, onClose }) {
         )}
         {!collapsed && !onToggleCollapse && (
           <p className="text-[10px] text-sidebar-foreground/40 text-center">
-            InvoiceHub v1.0
+            InvoiceHub v2.0
           </p>
         )}
       </div>

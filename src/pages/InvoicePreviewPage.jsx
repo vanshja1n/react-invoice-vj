@@ -4,7 +4,8 @@ import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { ArrowLeft, Download, Printer, Maximize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { InvoiceTemplate } from '@/components/pdf/InvoiceTemplate';
+import { InvoiceTemplateRenderer } from '@/components/pdf/InvoiceTemplate';
+import { prepareInvoiceForRender } from '@/services/templateService';
 import { downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
 import { getInvoice } from '@/services/db';
 
@@ -127,7 +128,7 @@ export default function InvoicePreviewPage() {
           className="shadow-xl rounded-lg overflow-hidden border border-border mx-auto"
           style={{ width: 'fit-content' }}
         >
-          <InvoiceTemplate invoice={invoice} />
+          <InvoiceTemplateRenderer invoice={prepareInvoiceForRender(invoice)} />
         </div>
       </div>
     </motion.div>

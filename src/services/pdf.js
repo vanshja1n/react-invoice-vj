@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { InvoicePDF, INVOICE_PDF_CAPTURE_ID } from '@/components/pdf/InvoicePDF';
+import { prepareInvoiceForRender } from '@/services/templateService';
 
 const A4_WIDTH_PT = 595.28;
 const A4_HEIGHT_PT = 841.89;
@@ -12,6 +13,7 @@ let pdfMountContainer = null;
 let pdfMountRoot = null;
 
 async function mountInvoiceForPdf(invoice) {
+  const prepared = prepareInvoiceForRender(invoice);
   if (!pdfMountContainer) {
     pdfMountContainer = document.createElement('div');
     pdfMountContainer.className = 'invoice-pdf-container';
@@ -21,7 +23,7 @@ async function mountInvoiceForPdf(invoice) {
   }
 
   await new Promise((resolve) => {
-    pdfMountRoot.render(createElement(InvoicePDF, { invoice }));
+    pdfMountRoot.render(createElement(InvoicePDF, { invoice: prepared }));
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   });
 }

@@ -10,6 +10,11 @@ import {
   getMonthlyRevenue,
   getLastInvoiceNumber,
 } from '@/services/db';
+import {
+  handleInvoiceStockUpdate,
+  handleInvoiceDelete,
+} from '@/services/inventoryService';
+import { isOverdue } from '@/types/invoice';
 
 export function useInvoices() {
   const [invoices, setInvoices] = useState([]);
@@ -35,20 +40,30 @@ export function useInvoices() {
   }, [refresh]);
 
   const add = useCallback(async (data) => {
+    await handleInvoiceStockUpdate(null, data);
     const invoice = await createInvoice(data);
     await refresh();
+    window.dispatchEvent(new CustomEvent('inventory-updated'));
     return invoice;
   }, [refresh]);
 
   const update = useCallback(async (id, data) => {
+    const oldInvoice = await getInvoice(id);
+    await handleInvoiceStockUpdate(oldInvoice, { ...oldInvoice, ...data, id });
     const invoice = await updateInvoice(id, data);
     await refresh();
+    window.dispatchEvent(new CustomEvent('inventory-updated'));
     return invoice;
   }, [refresh]);
 
   const remove = useCallback(async (id) => {
+    const invoice = await getInvoice(id);
+    if (invoice) {
+      await handleInvoiceDelete(invoice);
+    }
     await deleteInvoice(id);
     await refresh();
+    window.dispatchEvent(new CustomEvent('inventory-updated'));
   }, [refresh]);
 
   const search = useCallback(async (query) => {
@@ -65,7 +80,38 @@ export function useInvoices() {
     setLoading(true);
     try {
       const all = await getAllInvoices();
-      const filtered = status === 'all' ? all : all.filter(inv => inv.status === status);
+      if (status === 'all') {
+        setInvoices(all);
+      } else if (status === 'overdue') {
+        setInvoices(all.filter((inv) => isOverdue(inv)));
+      } else {
+        setInvoices(all.filter((inv) => inv.status === status && (status !== 'pending' && status !== 'sent' || !isOverdue(inv))));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  
+  const filterByDateRange = useCallback(async (start, end) => {
+    setLoading(true);
+    try {
+      const all = await getAllInvoices();
+      const filtered = all.filter((inv) => {
+        const invDate = new Date(inv.issueDate);
+        invDate.setHours(0, 0, 0, 0);
+        return invDate >= start && invDate <= end;
+      });
+      setInvoices(filtered);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const filterByCustomer = useCallback(async (customerId) => {
+    setLoading(true);
+    try {
+      const all = await getAllInvoices();
+      const filtered = all.filter((inv) => inv.customerId === customerId);
       setInvoices(filtered);
     } finally {
       setLoading(false);
@@ -73,7 +119,7 @@ export function useInvoices() {
   }, []);
 
   const sortInvoices = useCallback((field, direction = 'desc') => {
-    setInvoices(prev => {
+    setInvoices((prev) => {
       const sorted = [...prev].sort((a, b) => {
         let aVal = a[field];
         let bVal = b[field];
@@ -106,6 +152,8 @@ export function useInvoices() {
     remove,
     search,
     filterByStatus,
+    filterByDateRange,
+    filterByCustomer,
     sortInvoices,
     getInvoice,
     getLastInvoiceNumber,

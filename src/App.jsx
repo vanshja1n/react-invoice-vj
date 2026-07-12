@@ -1,6 +1,8 @@
 import { Routes, Route } from 'react-router-dom';
 import { AppLayout } from '@/layouts/AppLayout';
 import DashboardPage from '@/pages/DashboardPage';
+import ProductsPage from '@/pages/ProductsPage';
+import CustomersPage from '@/pages/CustomersPage';
 import InvoiceHistoryPage from '@/pages/InvoiceHistoryPage';
 import InvoiceEditorPage from '@/pages/InvoiceEditorPage';
 import InvoicePreviewPage from '@/pages/InvoicePreviewPage';
@@ -12,6 +14,8 @@ export default function App() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/products" element={<ProductsPage />} />
+        <Route path="/customers" element={<CustomersPage />} />
         <Route path="/invoices" element={<InvoiceHistoryPage />} />
         <Route path="/invoices/new" element={<InvoiceEditorPage />} />
         <Route path="/invoices/:id/edit" element={<InvoiceEditorPage />} />

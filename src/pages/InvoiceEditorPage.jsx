@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
-import { Save, Eye, Download, ArrowLeft, CheckCircle2, Clock } from 'lucide-react';
+import { Save, Eye, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -16,26 +16,38 @@ import { ClientDetails } from '@/components/invoice/ClientDetails';
 import { InvoiceItems } from '@/components/invoice/InvoiceItems';
 import { InvoiceSummary } from '@/components/invoice/InvoiceSummary';
 import { InvoiceFooter } from '@/components/invoice/InvoiceFooter';
+import { SaveCustomItemsAsProductsDialog } from '@/components/invoice/SaveCustomItemsAsProductsDialog';
 import { FormSkeleton } from '@/components/shared/LoadingSkeleton';
 import {
   createDefaultInvoice,
   calculateInvoiceTotals,
   generateInvoiceNumber,
+  prepareInvoiceForSave,
+  validateInvoiceItems,
   INVOICE_STATUS,
 } from '@/types/invoice';
-import { createInvoice, updateInvoice, getInvoice, getLastInvoiceNumber } from '@/services/db';
+import {
+  createDefaultProduct,
+} from '@/types/product';
+import { getInvoice, getLastInvoiceNumber, getAllProducts } from '@/services/db';
 import { getSettings } from '@/services/settings';
+import { useInvoices } from '@/hooks/useInvoices';
+import { useProducts } from '@/hooks/useProducts';
+import { TEMPLATE_LIST, getDefaultTemplateId } from '@/services/templateService';
 
 export default function InvoiceEditorPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const isEditing = !!id;
+  const { add, update } = useInvoices();
+  const { products, add: addProduct } = useProducts();
 
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [customItemsDialogOpen, setCustomItemsDialogOpen] = useState(false);
+  const [pendingCustomItems, setPendingCustomItems] = useState([]);
 
-  // Initialize invoice
   useEffect(() => {
     const init = async () => {
       setLoading(true);
@@ -54,6 +66,7 @@ export default function InvoiceEditorPage() {
           const lastNum = await getLastInvoiceNumber();
           const defaultInvoice = createDefaultInvoice(settings);
           defaultInvoice.invoiceNumber = generateInvoiceNumber(lastNum);
+          defaultInvoice.template = getDefaultTemplateId();
           setInvoice(defaultInvoice);
         }
       } catch (e) {
@@ -66,52 +79,99 @@ export default function InvoiceEditorPage() {
     init();
   }, [id, isEditing, navigate]);
 
-  // Update invoice field(s)
   const updateField = useCallback((updates) => {
+    console.log("[InvoiceEditor.updateField] called with updates:", updates);
     setInvoice((prev) => {
+      console.log("[InvoiceEditor.updateField] prev invoice items:", prev?.items?.map(i => ({ id: i.id, quantity: i.quantity, typeof_quantity: typeof i.quantity })));
+      console.log('[InvoiceEditor][STATE BEFORE]', prev);
+      
+      // Create a new updated object
       const updated = { ...prev, ...updates };
 
-      // Recalculate if items or rates changed
       if (updates.items || updates.taxRate !== undefined || updates.discountRate !== undefined || updates.shippingCharges !== undefined) {
-        const items = updates.items || prev.items;
+        // Get the items (either from updates or previous state)
+        const itemsToUse = updates.items || prev.items;
+        console.log("[InvoiceEditor.updateField] items for calculation:", itemsToUse?.map(i => ({ id: i.id, quantity: i.quantity, typeof_quantity: typeof i.quantity })));
+        
         const taxRate = updates.taxRate !== undefined ? updates.taxRate : prev.taxRate;
         const discountRate = updates.discountRate !== undefined ? updates.discountRate : prev.discountRate;
         const shippingCharges = updates.shippingCharges !== undefined ? updates.shippingCharges : prev.shippingCharges;
-        const totals = calculateInvoiceTotals(items, taxRate, discountRate, shippingCharges);
+        const totals = calculateInvoiceTotals(itemsToUse, taxRate, discountRate, shippingCharges);
+        // Merge the totals into our updated invoice
         Object.assign(updated, totals);
       }
 
+      console.log("[InvoiceEditor.updateField] returning updated invoice, items:", updated?.items?.map(i => ({ id: i.id, quantity: i.quantity, typeof_quantity: typeof i.quantity })));
+      console.log('[InvoiceEditor][STATE AFTER]', updated);
       return updated;
     });
   }, []);
 
-  // Recalculate totals whenever items change
   const handleItemsChange = useCallback((newItems) => {
+    console.log("[InvoiceEditor.handleItemsChange] called with newItems:", newItems.map(i => ({ id: i.id, quantity: i.quantity, typeof_quantity: typeof i.quantity })));
+    console.log('[InvoiceEditor][PARENT ITEMS]', newItems);
     updateField({ items: newItems });
   }, [updateField]);
 
-  // Save invoice
-  const handleSave = async (status) => {
+  const handleSaveCustomItemsAsProducts = async (items) => {
+    items.forEach(async (item) => {
+      const newProduct = {
+        ...createDefaultProduct(),
+        name: item.name,
+        description: item.description,
+        unit: item.unit,
+        sellingPrice: parseFloat(item.price),
+      };
+      try {
+        await addProduct(newProduct);
+        toast.success(`Product "${item.name}" added successfully!`);
+      } catch (e) {
+        console.error('Failed to add product:', e);
+        toast.error(`Failed to add product "${item.name}"`);
+      }
+    });
+  };
+
+  const handleSave = async () => {
     if (!invoice) return;
+
+    const validation = validateInvoiceItems(invoice);
+    if (!validation.valid) {
+      toast.error(validation.message);
+      return;
+    }
 
     setSaving(true);
     try {
-      const dataToSave = {
-        ...invoice,
-        status: status || invoice.status,
-        clientName: invoice.clientName,
-        companyName: invoice.companyName,
-        amount: invoice.total,
-      };
+      const dataToSave = prepareInvoiceForSave(invoice);
+      let savedInvoice;
 
       if (isEditing) {
-        await updateInvoice(parseInt(id, 10), dataToSave);
+        savedInvoice = await update(parseInt(id, 10), dataToSave);
         setInvoice({ ...dataToSave, id: parseInt(id, 10) });
         toast.success('Invoice updated successfully');
       } else {
-        const saved = await createInvoice(dataToSave);
+        savedInvoice = await add(dataToSave);
         toast.success('Invoice saved successfully');
-        navigate(`/invoices/${saved.id}/edit`, { replace: true });
+        navigate(`/invoices/${savedInvoice.id}/edit`, { replace: true });
+      }
+
+      // Find custom items
+      const customItems = dataToSave.items.filter(item =>
+        !item.productId && item.name.trim());
+      if (customItems.length > 0) {
+        // Check if any of these names already exist in products
+        const existingProductNames = new Set(products.map(p => p.name.toLowerCase()));
+        const newCustomItems = customItems.map(item => ({
+          ...item,
+          currency: dataToSave.currency,
+        })).filter(item =>
+          !existingProductNames.has(item.name.toLowerCase()));
+        
+        if (newCustomItems.length > 0) {
+          setPendingCustomItems(newCustomItems);
+          setCustomItemsDialogOpen(true);
+        }
       }
     } catch (e) {
       console.error('Failed to save:', e);
@@ -138,7 +198,6 @@ export default function InvoiceEditorPage() {
       transition={{ duration: 0.3 }}
       className="max-w-4xl mx-auto"
     >
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div className="flex items-center gap-3">
           <Button
@@ -161,7 +220,6 @@ export default function InvoiceEditorPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Status */}
           <Select
             value={invoice.status}
             onValueChange={(v) => updateField({ status: v })}
@@ -170,17 +228,30 @@ export default function InvoiceEditorPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={INVOICE_STATUS.DRAFT}>
-                <span className="flex items-center gap-1.5">Draft</span>
-              </SelectItem>
-              <SelectItem value={INVOICE_STATUS.PENDING}>
-                <span className="flex items-center gap-1.5">Pending</span>
-              </SelectItem>
-              <SelectItem value={INVOICE_STATUS.PAID}>
-                <span className="flex items-center gap-1.5">Paid</span>
-              </SelectItem>
+              <SelectItem value={INVOICE_STATUS.DRAFT}>Draft</SelectItem>
+              <SelectItem value={INVOICE_STATUS.SENT}>Sent</SelectItem>
+              <SelectItem value={INVOICE_STATUS.PENDING}>Pending</SelectItem>
+              <SelectItem value={INVOICE_STATUS.PAID}>Paid</SelectItem>
+              <SelectItem value={INVOICE_STATUS.CANCELLED}>Cancelled</SelectItem>
             </SelectContent>
           </Select>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted-foreground font-medium">Template</span>
+            <Select
+              value={invoice.template || getDefaultTemplateId()}
+              onValueChange={(v) => updateField({ template: v })}
+            >
+              <SelectTrigger className="h-8 w-[160px] text-xs">
+                <SelectValue placeholder="Select template" />
+              </SelectTrigger>
+              <SelectContent>
+                {TEMPLATE_LIST.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           <Button
             variant="outline"
@@ -200,7 +271,7 @@ export default function InvoiceEditorPage() {
           <Button
             size="sm"
             className="gap-1.5 h-8 text-xs"
-            onClick={() => handleSave()}
+            onClick={handleSave}
             disabled={saving}
           >
             <Save className="h-3.5 w-3.5" />
@@ -209,7 +280,6 @@ export default function InvoiceEditorPage() {
         </div>
       </div>
 
-      {/* Form */}
       <div className="space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
@@ -229,6 +299,13 @@ export default function InvoiceEditorPage() {
 
         <InvoiceFooter data={invoice} onChange={updateField} />
       </div>
+
+      <SaveCustomItemsAsProductsDialog
+        open={customItemsDialogOpen}
+        onOpenChange={setCustomItemsDialogOpen}
+        customItems={pendingCustomItems}
+        onSave={handleSaveCustomItemsAsProducts}
+      />
     </motion.div>
   );
 }

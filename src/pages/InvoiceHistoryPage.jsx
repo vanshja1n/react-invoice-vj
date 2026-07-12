@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +37,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { TableSkeleton } from '@/components/shared/LoadingSkeleton';
 import { useInvoices } from '@/hooks/useInvoices';
+import { useCustomers } from '@/hooks/useCustomers';
 import { formatCurrency, formatDate } from '@/types/invoice';
 import { createInvoice } from '@/services/db';
 import { generateInvoicePDF, downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
@@ -49,11 +51,17 @@ export default function InvoiceHistoryPage() {
     remove,
     search,
     filterByStatus,
+    filterByCustomer,
+    filterByDateRange,
     sortInvoices,
   } = useInvoices();
+  const { customers } = useCustomers();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [customerFilter, setCustomerFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [sortBy, setSortBy] = useState('createdAt-desc');
   const [deleteId, setDeleteId] = useState(null);
 
@@ -62,11 +70,50 @@ export default function InvoiceHistoryPage() {
     search(q);
   }, [search]);
 
-  const handleFilterChange = useCallback((status) => {
+  const handleStatusFilterChange = useCallback((status) => {
     setStatusFilter(status);
     setSearchQuery('');
+    setCustomerFilter('all');
+    setDateFrom('');
+    setDateTo('');
     filterByStatus(status);
   }, [filterByStatus]);
+
+  const handleCustomerFilterChange = useCallback((customerId) => {
+    setCustomerFilter(customerId);
+    setSearchQuery('');
+    setStatusFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    if (customerId === 'all') {
+      refresh();
+    } else {
+      filterByCustomer(parseInt(customerId, 10));
+    }
+  }, [filterByCustomer, refresh]);
+
+  const handleDateFilterChange = useCallback(() => {
+    if (!dateFrom || !dateTo) return;
+    setSearchQuery('');
+    setStatusFilter('all');
+    setCustomerFilter('all');
+    
+    const start = new Date(dateFrom);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(dateTo);
+    end.setHours(23, 59, 59, 999);
+    
+    filterByDateRange(start, end);
+  }, [dateFrom, dateTo, filterByDateRange]);
+
+  const handleClearFilters = useCallback(() => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setCustomerFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    refresh();
+  }, [refresh]);
 
   const handleSortChange = useCallback((val) => {
     setSortBy(val);
@@ -144,37 +191,81 @@ export default function InvoiceHistoryPage() {
       </PageHeader>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <SearchInput
-          value={searchQuery}
-          onChange={handleSearch}
-          placeholder="Search invoices..."
-          className="flex-1"
-        />
-        <Select value={statusFilter} onValueChange={handleFilterChange}>
-          <SelectTrigger className="h-9 w-full sm:w-[140px]">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="paid">Paid</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="draft">Draft</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={sortBy} onValueChange={handleSortChange}>
-          <SelectTrigger className="h-9 w-full sm:w-[160px]">
-            <SelectValue placeholder="Sort by" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="createdAt-desc">Newest First</SelectItem>
-            <SelectItem value="createdAt-asc">Oldest First</SelectItem>
-            <SelectItem value="total-desc">Amount (High)</SelectItem>
-            <SelectItem value="total-asc">Amount (Low)</SelectItem>
-            <SelectItem value="clientName-asc">Client (A-Z)</SelectItem>
-            <SelectItem value="clientName-desc">Client (Z-A)</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="flex flex-col gap-3 mb-4">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <SearchInput
+            value={searchQuery}
+            onChange={handleSearch}
+            placeholder="Search by invoice number, client, product..."
+            className="flex-1"
+          />
+          <Select value={sortBy} onValueChange={handleSortChange}>
+            <SelectTrigger className="h-9 w-full sm:w-[160px]">
+              <SelectValue placeholder="Sort by" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="createdAt-desc">Newest First</SelectItem>
+              <SelectItem value="createdAt-asc">Oldest First</SelectItem>
+              <SelectItem value="total-desc">Amount (High)</SelectItem>
+              <SelectItem value="total-asc">Amount (Low)</SelectItem>
+              <SelectItem value="clientName-asc">Client (A-Z)</SelectItem>
+              <SelectItem value="clientName-desc">Client (Z-A)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        
+        <div className="flex flex-col sm:flex-row flex-wrap gap-3 p-3 bg-muted/20 border border-border/50 rounded-lg">
+          <Select value={statusFilter} onValueChange={handleStatusFilterChange}>
+            <SelectTrigger className="h-8 text-xs w-full sm:w-[140px] bg-background">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="sent">Sent</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+              <SelectItem value="overdue">Overdue</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select value={customerFilter} onValueChange={handleCustomerFilterChange}>
+            <SelectTrigger className="h-8 text-xs w-full sm:w-[200px] bg-background">
+              <SelectValue placeholder="Customer" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Customers</SelectItem>
+              {customers.map((c) => (
+                <SelectItem key={c.id} value={c.id.toString()}>{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <div className="flex items-center gap-2">
+            <Input 
+              type="date" 
+              className="h-8 text-xs w-full sm:w-[130px] bg-background" 
+              value={dateFrom} 
+              onChange={(e) => setDateFrom(e.target.value)}
+              title="From Date"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <Input 
+              type="date" 
+              className="h-8 text-xs w-full sm:w-[130px] bg-background" 
+              value={dateTo} 
+              onChange={(e) => setDateTo(e.target.value)}
+              title="To Date"
+            />
+            <Button size="sm" variant="secondary" className="h-8 text-xs" onClick={handleDateFilterChange}>Apply Date</Button>
+          </div>
+          
+          {(statusFilter !== 'all' || customerFilter !== 'all' || dateFrom || dateTo || searchQuery) && (
+            <Button variant="ghost" size="sm" className="h-8 text-xs ml-auto" onClick={handleClearFilters}>
+              Clear Filters
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Content */}
@@ -185,16 +276,16 @@ export default function InvoiceHistoryPage() {
           <CardContent className="py-0">
             <EmptyState
               icon={FileText}
-              title={searchQuery ? 'No results found' : 'No invoices yet'}
+              title={searchQuery || statusFilter !== 'all' || customerFilter !== 'all' || dateFrom ? 'No results found' : 'No invoices yet'}
               description={
-                searchQuery
-                  ? 'Try a different search query'
+                searchQuery || statusFilter !== 'all' || customerFilter !== 'all' || dateFrom
+                  ? 'Try clearing or changing your filters'
                   : 'Create your first invoice to get started'
               }
-              actionLabel={searchQuery ? 'Clear Search' : 'Create Invoice'}
+              actionLabel={searchQuery || statusFilter !== 'all' || customerFilter !== 'all' || dateFrom ? 'Clear Filters' : 'Create Invoice'}
               onAction={
-                searchQuery
-                  ? () => handleSearch('')
+                searchQuery || statusFilter !== 'all' || customerFilter !== 'all' || dateFrom
+                  ? handleClearFilters
                   : () => navigate('/invoices/new')
               }
             />

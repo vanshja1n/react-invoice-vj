@@ -122,3 +122,25 @@
   -webkit-user-select: none;
   user-select: none;
 }
+
+@keyframes footerGlow {
+  0% {
+    transform: translateX(-140%);
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(140%);
+    opacity: 0.2;
+  }
+}
+
+.footer-line-track {
+  position: relative;
+}
+
+.footer-line-glow {
+  animation: footerGlow 3.2s ease-in-out infinite;
+}
