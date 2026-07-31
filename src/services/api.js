@@ -1,4 +1,27 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const DEFAULT_API_BASE = 'http://localhost:5000';
+const PRODUCTION_API_BASE = 'https://react-invoice-vj.onrender.com';
+
+const ENV_API_URL = import.meta.env.VITE_API_URL;
+
+const normalizeOrigin = (url) => {
+  if (!url) return '';
+  const trimmed = String(url).trim().replace(/\/+$/, '');
+  if (trimmed.endsWith('/api')) {
+    return trimmed.slice(0, -4).replace(/\/+$/, '');
+  }
+  return trimmed;
+};
+
+const DEV_ORIGINS = new Set([
+  'http://localhost:5000',
+  'http://127.0.0.1:5000',
+]);
+
+const rawOrigin = ENV_API_URL ? normalizeOrigin(ENV_API_URL) : '';
+const isDevEnv = !rawOrigin || DEV_ORIGINS.has(rawOrigin);
+const API_ORIGIN = rawOrigin || (isDevEnv ? DEFAULT_API_BASE : PRODUCTION_API_BASE);
+
+const API_BASE = `${API_ORIGIN}/api`;
 
 function getToken() {
   return localStorage.getItem('invoicehub_token');
@@ -27,7 +50,8 @@ async function request(path, { method = 'GET', body, headers = {}, requiresAuth 
   }
 
   try {
-    const response = await fetch(`${API_BASE}${path}`, options);
+    const endpoint = /^https?:\/\//i.test(path) ? path : `${API_BASE}${path}`;
+    const response = await fetch(endpoint, options);
 
     if (response.status === 401) {
       localStorage.removeItem('invoicehub_token');
@@ -64,6 +88,9 @@ async function request(path, { method = 'GET', body, headers = {}, requiresAuth 
 }
 
 export const api = {
+  health: {
+    check: () => request('/health', { method: 'GET' }),
+  },
   auth: {
     signup: (data) => request('/auth/signup', { method: 'POST', body: data, requiresAuth: false }),
     login: (data) => request('/auth/login', { method: 'POST', body: data, requiresAuth: false }),
@@ -117,4 +144,5 @@ export const api = {
   },
 };
 
+export { API_ORIGIN, API_BASE };
 export default api;

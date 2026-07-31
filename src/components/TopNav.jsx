@@ -21,6 +21,7 @@ import { useAuth, TRIGGER_SYNC_DIALOG_EVENT } from '@/contexts/AuthContext';
 import { AuthModal } from '@/components/auth/AuthModal';
 import { SyncChoiceDialog } from '@/components/auth/SyncChoiceDialog';
 import { processQueue, dispatchDataRefreshed } from '@/services/sync';
+import api from '@/services/api';
 import { toast } from 'sonner';
 
 export function TopNav({ onMenuClick }) {
@@ -39,8 +40,8 @@ export function TopNav({ onMenuClick }) {
   useEffect(() => {
     if (!isAuthenticated) return;
     const handler = async () => {
-      const res = await fetch('/api/health', { method: 'HEAD' }).catch(() => ({ ok: false }));
-      if (res.ok && pendingCount > 0) {
+      const res = await api.health.check().catch(() => null);
+      if (res && pendingCount > 0) {
         const count = await processQueue();
         if (count === 0 && pendingCount > 0) {
           toast.success('Changes synced to cloud');
