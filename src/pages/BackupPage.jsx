@@ -235,10 +235,12 @@ export default function BackupPage() {
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              Danger Zone
+              Danger Zone — Clear Local Data
             </CardTitle>
             <CardDescription className="text-xs">
-              Permanently delete all data (invoices, products, customers). This cannot be undone.
+              Remove all invoices, products, customers, and inventory history from <strong>this browser's local storage</strong>
+              (IndexedDB). If you are signed in with cloud sync, your data on the server is preserved and will be restored the
+              next time you sign in or sync. Export a backup first if you want to keep this local copy. This action cannot be undone.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -248,7 +250,7 @@ export default function BackupPage() {
               className="gap-1.5"
               size="sm"
             >
-              <Trash2 className="h-4 w-4" /> Clear All Data
+              <Trash2 className="h-4 w-4" /> Clear Local Browser Data
             </Button>
           </CardContent>
         </Card>
@@ -258,9 +260,9 @@ export default function BackupPage() {
       <ConfirmDialog
         open={clearOpen}
         onOpenChange={setClearOpen}
-        title="Clear All Data"
-        description="This will permanently delete all your invoices, products, and customers. Export a backup first if you want to keep your data. This action cannot be undone."
-        confirmLabel="Delete All"
+        title="Clear Local Browser Data"
+        description="This will permanently remove all invoices, products, customers, and inventory history from this browser only. If you are signed in, your cloud data is safe and will re-appear next time you log in. Export a backup first if you want to keep this local copy. This action cannot be undone."
+        confirmLabel="Clear Local Data"
         onConfirm={handleClear}
       />
 

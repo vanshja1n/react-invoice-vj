@@ -15,8 +15,8 @@ export function useInventoryHistory() {
     pageSize: 20,
   });
 
-  const fetchRecords = useCallback(async (overrideFilters = {}) => {
-    setLoading(true);
+  const _fetchWithFilters = useCallback(async (overrideFilters = {}, { silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const merged = { ...filters, ...overrideFilters };
       const result = await searchInventoryHistory(merged);
@@ -33,19 +33,32 @@ export function useInventoryHistory() {
     } catch (e) {
       console.error('Failed to load inventory history:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [filters]);
+
+  const fetchRecords = useCallback(async (overrideFilters = {}) => {
+    return _fetchWithFilters(overrideFilters, { silent: false });
+  }, [_fetchWithFilters]);
+
+  const silentFetch = useCallback(async () => {
+    return _fetchWithFilters({}, { silent: true });
+  }, [_fetchWithFilters]);
 
   useEffect(() => {
     fetchRecords();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const handler = () => fetchRecords();
+    const handler = () => silentFetch();
+    const handlerData = () => silentFetch();
     window.addEventListener('inventory-updated', handler);
-    return () => window.removeEventListener('inventory-updated', handler);
-  }, [fetchRecords]);
+    window.addEventListener('data-refreshed', handlerData);
+    return () => {
+      window.removeEventListener('inventory-updated', handler);
+      window.removeEventListener('data-refreshed', handlerData);
+    };
+  }, [silentFetch]);
 
   const updateFilters = useCallback((newFilters) => {
     fetchRecords({ ...newFilters, page: newFilters.page || 1 });

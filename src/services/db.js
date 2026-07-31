@@ -2,6 +2,17 @@ import Dexie from 'dexie';
 import { isOverdue } from '@/types/invoice';
 import { generateSKU } from '@/types/product';
 
+function _isAuthed() {
+  return !!localStorage.getItem('invoicehub_token');
+}
+async function _queue(entity, operation, data) {
+  if (!_isAuthed()) return;
+  try {
+    const { queueOperation } = await import('@/services/sync');
+    queueOperation(entity, operation, data);
+  } catch (_err) { void _err; /* noop */ }
+}
+
 // Create database
 const db = new Dexie('InvoiceHubDB');
 
@@ -38,7 +49,9 @@ export async function createInvoice(invoiceData) {
   };
   if (data.id === undefined) delete data.id;
   const id = await db.invoices.add(data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('invoices', 'create', result);
+  return result;
 }
 
 export async function updateInvoice(id, invoiceData) {
@@ -48,11 +61,14 @@ export async function updateInvoice(id, invoiceData) {
     updatedAt: now,
   };
   await db.invoices.update(id, data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('invoices', 'update', result);
+  return result;
 }
 
 export async function deleteInvoice(id) {
   await db.invoices.delete(id);
+  await _queue('invoices', 'delete', id);
 }
 
 export async function getInvoice(id) {
@@ -214,7 +230,9 @@ export async function createProduct(productData) {
   };
   if (data.id === undefined) delete data.id;
   const id = await db.products.add(data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('products', 'create', result);
+  return result;
 }
 
 export async function updateProduct(id, productData) {
@@ -224,11 +242,14 @@ export async function updateProduct(id, productData) {
     updatedAt: now,
   };
   await db.products.update(id, data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('products', 'update', result);
+  return result;
 }
 
 export async function deleteProduct(id) {
   await db.products.delete(id);
+  await _queue('products', 'delete', id);
 }
 
 export async function getProduct(id) {
@@ -292,7 +313,9 @@ export async function reduceProductStock(productId, quantity) {
     currentStock: newStock,
     updatedAt: new Date().toISOString(),
   });
-  return { ...product, previousStock, currentStock: newStock, quantityChanged: -qty };
+  const result = { ...product, previousStock, currentStock: newStock, quantityChanged: -qty };
+  await _queue('products', 'update', { id: productId, currentStock: newStock, updatedAt: new Date().toISOString() });
+  return result;
 }
 
 export async function restoreProductStock(productId, quantity) {
@@ -308,7 +331,9 @@ export async function restoreProductStock(productId, quantity) {
     currentStock: newStock,
     updatedAt: new Date().toISOString(),
   });
-  return { ...product, previousStock, currentStock: newStock, quantityChanged: qty };
+  const result = { ...product, previousStock, currentStock: newStock, quantityChanged: qty };
+  await _queue('products', 'update', { id: productId, currentStock: newStock, updatedAt: new Date().toISOString() });
+  return result;
 }
 
 export async function setProductStock(productId, newStock) {
@@ -321,12 +346,14 @@ export async function setProductStock(productId, newStock) {
     currentStock: stock,
     updatedAt: new Date().toISOString(),
   });
-  return {
+  const result = {
     ...product,
     previousStock,
     currentStock: stock,
     quantityChanged: stock - previousStock,
   };
+  await _queue('products', 'update', { id: productId, currentStock: stock, updatedAt: new Date().toISOString() });
+  return result;
 }
 
 export async function getLastProductNumber() {
@@ -367,7 +394,9 @@ export async function createCustomer(customerData) {
   };
   if (data.id === undefined) delete data.id;
   const id = await db.customers.add(data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('customers', 'create', result);
+  return result;
 }
 
 export async function updateCustomer(id, customerData) {
@@ -377,11 +406,14 @@ export async function updateCustomer(id, customerData) {
     updatedAt: now,
   };
   await db.customers.update(id, data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('customers', 'update', result);
+  return result;
 }
 
 export async function deleteCustomer(id) {
   await db.customers.delete(id);
+  await _queue('customers', 'delete', id);
 }
 
 export async function getCustomer(id) {
@@ -538,14 +570,17 @@ export async function importInvoices(jsonString) {
 // Clear all data
 export async function clearAllInvoices() {
   await db.invoices.clear();
+  await _queue('invoices', 'clear', null);
 }
 
 export async function clearAllProducts() {
   await db.products.clear();
+  await _queue('products', 'clear', null);
 }
 
 export async function clearAllCustomers() {
   await db.customers.clear();
+  await _queue('customers', 'clear', null);
 }
 
 export async function clearAllData() {
@@ -553,6 +588,10 @@ export async function clearAllData() {
   await db.products.clear();
   await db.customers.clear();
   await db.inventoryHistory.clear();
+  await _queue('invoices', 'clear', null);
+  await _queue('products', 'clear', null);
+  await _queue('customers', 'clear', null);
+  await _queue('inventory', 'clear', null);
 }
 
 // ─── Inventory History ───────────────────────────────────────
@@ -565,7 +604,9 @@ export async function createInventoryRecord(record) {
   };
   if (data.id === undefined) delete data.id;
   const id = await db.inventoryHistory.add(data);
-  return { ...data, id };
+  const result = { ...data, id };
+  await _queue('inventory', 'create', result);
+  return result;
 }
 
 export async function getAllInventoryHistory() {

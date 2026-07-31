@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  getAllCustomers,
   getAllUniqueCustomers,
   createCustomer,
   updateCustomer,
@@ -15,23 +14,42 @@ export function useCustomers() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState(null);
 
+  const _readData = useCallback(async () => {
+    const data = await getAllUniqueCustomers();
+    setCustomers(data);
+    const s = await getCustomerStats();
+    setStats(s);
+    return { data, stats: s };
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getAllUniqueCustomers();
-      setCustomers(data);
-      const s = await getCustomerStats();
-      setStats(s);
+      await _readData();
     } catch (e) {
       console.error('Failed to load customers:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [_readData]);
+
+  const silentRefresh = useCallback(async () => {
+    try {
+      await _readData();
+    } catch (e) {
+      console.error('Failed to load customers:', e);
+    }
+  }, [_readData]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const handler = () => silentRefresh();
+    window.addEventListener('data-refreshed', handler);
+    return () => window.removeEventListener('data-refreshed', handler);
+  }, [silentRefresh]);
 
   const add = useCallback(async (data) => {
     const customer = await createCustomer(data);

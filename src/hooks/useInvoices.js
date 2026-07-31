@@ -21,23 +21,42 @@ export function useInvoices() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState(null);
 
+  const _readData = useCallback(async () => {
+    const data = await getAllInvoices();
+    setInvoices(data);
+    const s = await getInvoiceStats();
+    setStats(s);
+    return { data, stats: s };
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getAllInvoices();
-      setInvoices(data);
-      const s = await getInvoiceStats();
-      setStats(s);
+      await _readData();
     } catch (e) {
       console.error('Failed to load invoices:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [_readData]);
+
+  const silentRefresh = useCallback(async () => {
+    try {
+      await _readData();
+    } catch (e) {
+      console.error('Failed to load invoices:', e);
+    }
+  }, [_readData]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const handler = () => silentRefresh();
+    window.addEventListener('data-refreshed', handler);
+    return () => window.removeEventListener('data-refreshed', handler);
+  }, [silentRefresh]);
 
   const add = useCallback(async (data) => {
     await handleInvoiceStockUpdate(null, data);

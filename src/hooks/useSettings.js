@@ -4,15 +4,19 @@ import { getSettings, saveSettings } from '@/services/settings';
 export function useSettings() {
   const [settings, setSettingsState] = useState(() => getSettings());
 
-  // Sync with localStorage changes from other tabs
   useEffect(() => {
     const handler = (e) => {
       if (e.key === 'invoicehub_settings') {
         setSettingsState(getSettings());
       }
     };
+    const refresh = () => setSettingsState(getSettings());
     window.addEventListener('storage', handler);
-    return () => window.removeEventListener('storage', handler);
+    window.addEventListener('data-refreshed', refresh);
+    return () => {
+      window.removeEventListener('storage', handler);
+      window.removeEventListener('data-refreshed', refresh);
+    };
   }, []);
 
   const updateSettings = useCallback((newSettings) => {

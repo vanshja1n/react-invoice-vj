@@ -15,6 +15,18 @@ const DEFAULT_SETTINGS = {
   theme: 'system', // 'light' | 'dark' | 'system'
 };
 
+function _isAuthed() {
+  return !!localStorage.getItem('invoicehub_token');
+}
+
+async function _queueSettings(data) {
+  if (!_isAuthed()) return;
+  try {
+    const { queueOperation } = await import('@/services/sync');
+    queueOperation('settings', 'update', data);
+  } catch (_err) { void _err; /* noop */ }
+}
+
 export function getSettings() {
   try {
     const stored = localStorage.getItem(SETTINGS_KEY);
@@ -31,6 +43,7 @@ export function saveSettings(settings) {
   try {
     const merged = { ...DEFAULT_SETTINGS, ...settings };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    _queueSettings(merged).catch(() => {});
     return merged;
   } catch (e) {
     console.error('Failed to save settings:', e);

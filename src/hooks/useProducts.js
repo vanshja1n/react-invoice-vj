@@ -21,29 +21,47 @@ export function useProducts() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState(null);
 
+  const _readData = useCallback(async () => {
+    const data = await getAllProducts();
+    setProducts(data);
+    const s = await getProductStats();
+    setStats(s);
+    return { data, stats: s };
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getAllProducts();
-      setProducts(data);
-      const s = await getProductStats();
-      setStats(s);
+      await _readData();
     } catch (e) {
       console.error('Failed to load products:', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [_readData]);
+
+  const silentRefresh = useCallback(async () => {
+    try {
+      await _readData();
+    } catch (e) {
+      console.error('Failed to load products:', e);
+    }
+  }, [_readData]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
   useEffect(() => {
-    const handler = () => refresh();
-    window.addEventListener('inventory-updated', handler);
-    return () => window.removeEventListener('inventory-updated', handler);
-  }, [refresh]);
+    const handler = () => silentRefresh();
+    const handlerInv = () => silentRefresh();
+    window.addEventListener('inventory-updated', handlerInv);
+    window.addEventListener('data-refreshed', handler);
+    return () => {
+      window.removeEventListener('inventory-updated', handlerInv);
+      window.removeEventListener('data-refreshed', handler);
+    };
+  }, [silentRefresh]);
 
   const add = useCallback(async (data) => {
     const product = await createProduct(data);

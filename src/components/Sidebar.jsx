@@ -11,6 +11,7 @@ import {
   Receipt,
   Package,
   Users,
+  Crown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -22,6 +23,7 @@ const navItems = [
   { to: '/products', icon: Package, label: 'Products' },
   { to: '/invoices', icon: FileText, label: 'Invoice History' },
   { to: '/customers', icon: Users, label: 'Customers' },
+  { to: '/subscription', icon: Crown, label: 'Subscription' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/backup', icon: HardDriveDownload, label: 'Backup & Restore' },
 ];

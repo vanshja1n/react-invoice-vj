@@ -4,12 +4,19 @@ import { Sidebar } from '@/components/Sidebar';
 import { TopNav } from '@/components/TopNav';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useAuth } from '@/contexts/AuthContext';
+import { CloudUpload, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [guestBannerDismissed, setGuestBannerDismissed] = useState(false);
+  const { isAuthenticated } = useAuth();
 
   useKeyboardShortcuts();
+
+  const showGuestBanner = !isAuthenticated && !guestBannerDismissed;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -57,6 +64,29 @@ export function AppLayout() {
         <TopNav
           onMenuClick={() => setSidebarOpen(true)}
         />
+        {showGuestBanner && (
+          <div className="border-b border-border bg-gradient-to-r from-amber-50 via-amber-50/80 to-amber-50 dark:from-amber-950/30 dark:via-amber-950/20 dark:to-amber-950/30">
+            <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-2 flex items-center gap-3">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                <CloudUpload className="h-3.5 w-3.5" />
+              </div>
+              <p className="text-xs text-amber-900 dark:text-amber-100 flex-1">
+                <span className="font-semibold">You're using Guest Mode.</span>{' '}
+                <span className="opacity-90">Sign in to sync your data across devices and never lose work.</span>
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0 text-amber-800 dark:text-amber-200 hover:bg-amber-500/10"
+                onClick={() => setGuestBannerDismissed(true)}
+                aria-label="Dismiss Guest Mode notice"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
             <Outlet />

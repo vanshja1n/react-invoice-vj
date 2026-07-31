@@ -8,6 +8,7 @@ import InvoiceEditorPage from '@/pages/InvoiceEditorPage';
 import InvoicePreviewPage from '@/pages/InvoicePreviewPage';
 import SettingsPage from '@/pages/SettingsPage';
 import BackupPage from '@/pages/BackupPage';
+import SubscriptionPage from '@/pages/SubscriptionPage';
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/invoices/new" element={<InvoiceEditorPage />} />
         <Route path="/invoices/:id/edit" element={<InvoiceEditorPage />} />
         <Route path="/invoices/:id/preview" element={<InvoicePreviewPage />} />
+        <Route path="/subscription" element={<SubscriptionPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/backup" element={<BackupPage />} />
       </Route>
