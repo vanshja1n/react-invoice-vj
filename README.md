@@ -1,4 +1,4 @@
-# InvoiceHub
+# InvoiceHub - SaaS Product
 
 A modern **Invoice & Inventory Management System** built with **React, Vite, Tailwind CSS, and IndexedDB**. Manage customers, products, inventory, and invoices with professional PDF generation, analytics dashboard, and offline-first local storage.
 
@@ -47,11 +47,6 @@ A modern **Invoice & Inventory Management System** built with **React, Vite, Tai
 - Default invoice settings
 - Theme customization
 
-### 💾 Offline First
-- IndexedDB (Dexie.js)
-- Local data persistence
-- Backup & Restore
-- JSON Export/Import
 
 ---
 
