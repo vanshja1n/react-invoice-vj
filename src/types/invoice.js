@@ -192,6 +192,7 @@ export function normalizeInvoiceItemForSave(item) {
 // Prepare invoice for saving — strips empty rows, recalculates totals,
 // and always emits every financial field so both client and server schemas
 // are satisfied and old invoices that lacked subTotal are healed on save.
+// CRITICAL: Always preserves status field to ensure status changes persist.
 export function prepareInvoiceForSave(invoice) {
   const validItems = filterValidItems(invoice.items || []).map(normalizeInvoiceItemForSave);
   const totals = calculateInvoiceTotals(
@@ -203,6 +204,8 @@ export function prepareInvoiceForSave(invoice) {
   return {
     ...invoice,
     items: validItems,
+    // CRITICAL: Always preserve status field
+    status: invoice.status || INVOICE_STATUS.DRAFT,
     // Canonical camelCase names used throughout the client
     subTotal: totals.subTotal,
     taxAmount: totals.taxAmount,

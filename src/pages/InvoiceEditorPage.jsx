@@ -190,11 +190,9 @@ export default function InvoiceEditorPage() {
     if (!invoice) return undefined;
     if (_saveInFlightRef.current) return undefined;
 
-    // Cancelled invoices are read-only — prevent any further saves.
-    if (invoice.status === INVOICE_STATUS.CANCELLED) {
-      toast.error('Cancelled invoices cannot be edited or re-saved.');
-      return undefined;
-    }
+    // CRITICAL FIX: Allow cancelled invoices to be edited and status changed
+    // Users should be able to change status from Cancelled back to Paid or any other status
+    // Removed the restriction that prevented saving cancelled invoices
 
     _saveInFlightRef.current = true;
 
@@ -310,12 +308,12 @@ export default function InvoiceEditorPage() {
       transition={{ duration: 0.3 }}
       className="max-w-4xl mx-auto"
     >
-      {/* Cancelled read-only banner */}
+      {/* Cancelled invoice informational banner */}
       {isCancelled && (
-        <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm">
-          <Ban className="h-4 w-4 shrink-0 text-gray-500" />
+        <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-sm">
+          <Ban className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <span>
-            This invoice has been <strong>cancelled</strong> and is read-only. Duplicate it to create a new invoice.
+            This invoice is <strong>cancelled</strong>. You can edit it and change the status back to Paid or any other status.
           </span>
         </div>
       )}
@@ -333,7 +331,7 @@ export default function InvoiceEditorPage() {
           </Button>
           <div>
             <h1 className="text-xl font-bold tracking-tight">
-              {isEditing ? (isCancelled ? 'Cancelled Invoice' : 'Edit Invoice') : 'New Invoice'}
+              {isEditing ? 'Edit Invoice' : 'New Invoice'}
             </h1>
             <p className="text-xs text-muted-foreground">
               {invoice.invoiceNumber}
@@ -342,11 +340,10 @@ export default function InvoiceEditorPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Status selector — disabled for cancelled invoices */}
+          {/* Status selector — always enabled to allow status changes */}
           <Select
             value={invoice.status}
             onValueChange={(v) => updateField({ status: v })}
-            disabled={isCancelled}
           >
             <SelectTrigger className="h-8 w-[120px] text-xs">
               <SelectValue />
@@ -365,7 +362,6 @@ export default function InvoiceEditorPage() {
             <Select
               value={invoice.template || getDefaultTemplateId()}
               onValueChange={(v) => updateField({ template: v })}
-              disabled={isCancelled}
             >
               <SelectTrigger className="h-8 w-[160px] text-xs">
                 <SelectValue placeholder="Select template" />
@@ -383,22 +379,21 @@ export default function InvoiceEditorPage() {
             size="sm"
             className="gap-1.5 h-8 text-xs"
             onClick={handlePreview}
-            disabled={saving || loading || isCancelled}
+            disabled={saving || loading}
           >
             <Eye className="h-3.5 w-3.5" />
             {saving ? 'Saving…' : 'Preview'}
           </Button>
 
-          {!isCancelled && (
-            <Button
-              size="sm"
-              className="gap-1.5 h-8 text-xs"
-              onClick={handleSave}
-              disabled={saving || loading}
-            >
-              <Save className="h-3.5 w-3.5" />
-              {saving ? 'Saving...' : 'Save'}
-            </Button>
+          <Button
+            size="sm"
+            className="gap-1.5 h-8 text-xs"
+            onClick={handleSave}
+            disabled={saving || loading}
+          >
+            <Save className="h-3.5 w-3.5" />
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
           )}
         </div>
       </div>

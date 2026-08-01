@@ -1,5 +1,6 @@
 import { getInvoice, getInvoiceWithFallback } from '@/services/db';
 import { prepareInvoiceForRender } from '@/services/templateService';
+import { calculateInvoiceTotals, filterValidItems } from '@/types/invoice';
 
 /**
  * CENTRALIZED INVOICE LOADING SERVICE
@@ -12,9 +13,61 @@ import { prepareInvoiceForRender } from '@/services/templateService';
  * - Consistent data preparation
  * - Centralized error handling
  * - Comprehensive logging
+ * - Automatic repair of missing totals for backward compatibility
  */
 
 const LOG_TAG = '[INVOICE-SERVICE]';
+
+/**
+ * Repair missing totals in an invoice
+ * This ensures backward compatibility with older invoices that might be missing
+ * subtotal, total, taxAmount, discountAmount, etc.
+ */
+function repairInvoiceTotals(invoice) {
+  if (!invoice) return invoice;
+  
+  const validItems = filterValidItems(invoice.items || []);
+  
+  // If totals are missing or invalid, recalculate from line items
+  const needsRepair = (
+    invoice.subTotal === null || 
+    invoice.subTotal === undefined ||
+    invoice.total === null ||
+    invoice.total === undefined ||
+    isNaN(invoice.subTotal) ||
+    isNaN(invoice.total)
+  );
+  
+  if (needsRepair && validItems.length > 0) {
+    console.log(`${LOG_TAG}[REPAIR] Recalculating missing totals`, {
+      invoiceNumber: invoice.invoiceNumber,
+      currentSubTotal: invoice.subTotal,
+      currentTotal: invoice.total,
+      itemCount: validItems.length
+    });
+    
+    const recalculated = calculateInvoiceTotals(
+      validItems,
+      invoice.taxRate,
+      invoice.discountRate,
+      invoice.shippingCharges
+    );
+    
+    return {
+      ...invoice,
+      subTotal: recalculated.subTotal,
+      taxAmount: recalculated.taxAmount,
+      discountAmount: recalculated.discountAmount,
+      total: recalculated.total,
+      // Aliases for backward compatibility
+      subtotal: recalculated.subTotal,
+      amount: recalculated.total,
+      grandTotal: recalculated.total,
+    };
+  }
+  
+  return invoice;
+}
 
 /**
  * Load invoice by ID with comprehensive fallback strategies
@@ -55,22 +108,38 @@ export async function loadInvoice(id, opts = {}) {
       invoiceNumber: invoice.invoiceNumber,
       invoiceId: invoice.id,
       total: invoice.total,
+      status: invoice.status,
       itemCount: invoice.items?.length
     });
 
+    // CRITICAL: Repair missing totals for backward compatibility
+    const repairedInvoice = repairInvoiceTotals(invoice);
+    
+    if (repairedInvoice !== invoice) {
+      console.log(`${LOG_TAG}[LOAD] Invoice totals repaired`, {
+        trace,
+        invoiceNumber: repairedInvoice.invoiceNumber,
+        oldSubTotal: invoice.subTotal,
+        newSubTotal: repairedInvoice.subTotal,
+        oldTotal: invoice.total,
+        newTotal: repairedInvoice.total
+      });
+    }
+
     // Prepare for rendering if requested (used by Preview, PDF, etc.)
     if (prepareForRender) {
-      const prepared = prepareInvoiceForRender(invoice);
+      const prepared = prepareInvoiceForRender(repairedInvoice);
       console.log(`${LOG_TAG}[LOAD] Invoice prepared for render`, {
         trace,
         invoiceNumber: prepared.invoiceNumber,
         preparedTotal: prepared.total,
+        status: prepared.status,
         itemCount: prepared.items?.length
       });
       return prepared;
     }
 
-    return invoice;
+    return repairedInvoice;
   } catch (error) {
     console.error(`${LOG_TAG}[LOAD] Error loading invoice`, {
       trace,
