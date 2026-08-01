@@ -81,6 +81,25 @@ export function useInvoices() {
     _addBusyRef.current = true;
     try {
       _logCreate('invoices:add:start', { timestamp: ts, requestId, invoiceNumber: data?.invoiceNumber, entityId: null });
+      
+      // CRITICAL FIX: Validate invoice data before creation
+      if (data.items && Array.isArray(data.items)) {
+        const corruptedItems = data.items.filter(i => {
+          if (i.price === 0 && i.productId) {
+            console.error('[useInvoices.add] Corrupted item: price 0 with productId', {
+              itemName: i.name,
+              productId: i.productId
+            });
+            return true;
+          }
+          return false;
+        });
+        
+        if (corruptedItems.length > 0) {
+          throw new Error(`Cannot create invoice with ${corruptedItems.length} corrupted items (price 0 with productId)`);
+        }
+      }
+      
       await handleInvoiceStockUpdate(null, data);
       const invoice = await createInvoice(data);
       _logCreate('invoices:add:done', { timestamp: new Date().toISOString(), requestId, invoiceNumber: invoice?.invoiceNumber, entityId: String(invoice?.id ?? '') });
@@ -106,6 +125,26 @@ export function useInvoices() {
     _updateBusyRef.current.set(key, true);
     try {
       _logCreate('invoices:update:start', { timestamp: new Date().toISOString(), requestId, entityId: key });
+      
+      // CRITICAL FIX: Validate invoice data before update
+      if (data.items && Array.isArray(data.items)) {
+        const corruptedItems = data.items.filter(i => {
+          if (i.price === 0 && i.productId) {
+            console.error('[useInvoices.update] Corrupted item: price 0 with productId', {
+              invoiceId: id,
+              itemName: i.name,
+              productId: i.productId
+            });
+            return true;
+          }
+          return false;
+        });
+        
+        if (corruptedItems.length > 0) {
+          throw new Error(`Cannot update invoice with ${corruptedItems.length} corrupted items (price 0 with productId)`);
+        }
+      }
+      
       const oldInvoice = await getInvoice(id);
       await handleInvoiceStockUpdate(oldInvoice, { ...oldInvoice, ...data, id });
       const invoice = await updateInvoice(id, data);

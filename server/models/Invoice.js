@@ -30,11 +30,11 @@ const invoiceSchema = new mongoose.Schema({
     name: String,
     description: String,
     quantity: Number,
-    price: Number, // Changed from unitPrice to match client schema
-    tax: Number, // Changed from taxRate to match client schema
+    price: { type: Number, default: 0 },
+    tax: { type: Number, default: 0 },
     sku: String,
-    discount: Number,
-    unit: String, // Added to match client schema
+    discount: { type: Number, default: 0 },
+    unit: { type: String, default: 'pcs' },
   }],
   subtotal: Number,
   taxAmount: Number,

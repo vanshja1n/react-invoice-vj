@@ -17,6 +17,7 @@ const customerSchema = new mongoose.Schema({
   address: String,
   gstNumber: String,
   company: String,
+  notes: String, // Added for customer notes
   createdAt: String,
   updatedAt: String,
 }, {

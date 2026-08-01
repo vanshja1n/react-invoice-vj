@@ -89,6 +89,16 @@ export function useProducts() {
     _addBusyRef.current = true;
     try {
       _logCreate('products:add:start', { timestamp: ts, requestId, name: data?.name, entityId: null });
+      
+      // CRITICAL FIX: Validate product data before creation
+      if (data.sellingPrice === 0 && data.name) {
+        console.warn('[useProducts.add] Product has sellingPrice 0', {
+          productName: data.name,
+          sku: data.sku
+        });
+        // Allow but warn - price can be 0 for free products
+      }
+      
       const product = await createProduct(data);
       _logCreate('products:add:done', { timestamp: new Date().toISOString(), requestId, name: product?.name, entityId: String(product?.id ?? '') });
       await logProductCreated(product);
@@ -114,6 +124,16 @@ export function useProducts() {
     _updateBusyRef.current.set(key, true);
     try {
       _logCreate('products:update:start', { timestamp: new Date().toISOString(), requestId, entityId: key });
+      
+      // CRITICAL FIX: Validate product data before update
+      if (data.sellingPrice === 0 && data.name) {
+        console.warn('[useProducts.update] Product has sellingPrice 0', {
+          productId: id,
+          productName: data.name
+        });
+        // Allow but warn - price can be 0 for free products
+      }
+      
       const oldProduct = await getProduct(id);
       const product = await updateProduct(id, data);
 

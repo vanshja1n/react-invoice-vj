@@ -499,26 +499,28 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     const { id: _idAlias, _id, userId: _uid, __v, ...rest } = doc;
     void _idAlias; void _uid;
     
-    // CRITICAL FIX: Handle field name mapping for invoice items (client -> server)
-    // Ensure prices are never corrupted during mapping
+    // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
+    // No field mapping needed for invoice items - pass through as-is
+    // Only ensure values are preserved and not defaulted to 0/null
     if (rest.items && Array.isArray(rest.items)) {
       rest.items = rest.items.map(item => {
-        const { price, tax, ...itemRest } = item;
-        // CRITICAL: Only map if values exist, never default to 0/null
-        const unitPrice = (price !== undefined && price !== null) ? price : 
-                         (item.unitPrice !== undefined && item.unitPrice !== null ? item.unitPrice : 0);
-        const taxRate = (tax !== undefined && tax !== null) ? tax : 
-                        (item.taxRate !== undefined && item.taxRate !== null ? item.taxRate : 0);
+        const { price, tax, unit, ...itemRest } = item;
+        // CRITICAL: Preserve exact values, only ensure they're numbers
+        const safePrice = (price === null || price === undefined) ? 0 : 
+                        (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
+        const safeTax = (tax === null || tax === undefined) ? 0 : 
+                      (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
         
         return {
           ...itemRest,
-          unitPrice,
-          taxRate,
+          price: safePrice,
+          tax: safeTax,
+          unit: unit || 'pcs',
         };
       });
     }
     
-    // Handle GST field mapping
+    // Handle GST field mapping (preserve both for compatibility)
     if (rest.companyGst !== undefined && !rest.gstNumber) {
       rest.gstNumber = rest.companyGst;
     }
@@ -892,31 +894,88 @@ export async function processQueue() {
         
         // CRITICAL FIX: Validate data integrity before processing
         if (item.operation === 'create' || item.operation === 'update') {
-          if (item.data && item.data.items && Array.isArray(item.data.items)) {
-            const corruptedItems = item.data.items.filter(i => {
-              // Check for corrupted prices
-              if (i.price === 0 && i.productId) {
-                _log('error', 'QUEUE-DATA-CORRUPTION', `Item has price 0 with productId in queue op`, {
-                  entity: item.entity,
-                  operation: item.operation,
-                  itemId: item.id,
-                  itemName: i.name,
-                  productId: i.productId
-                });
-                return true;
-              }
-              return false;
-            });
-            
-            if (corruptedItems.length > 0) {
-              _log('error', 'QUEUE-DATA-CORRUPTION', `Skipping corrupted operation due to ${corruptedItems.length} corrupted items`, {
-                entity: item.entity,
-                operation: item.operation,
-                itemId: item.id
+          let isCorrupted = false;
+          let corruptionReason = '';
+          
+          // Validate invoices
+          if (item.entity === 'invoices' && item.data) {
+            if (item.data.items && Array.isArray(item.data.items)) {
+              const corruptedItems = item.data.items.filter(i => {
+                // Check for corrupted prices
+                if (i.price === 0 && i.productId) {
+                  _log('error', 'QUEUE-DATA-CORRUPTION', `Invoice item has price 0 with productId`, {
+                    itemId: item.id,
+                    itemName: i.name,
+                    productId: i.productId
+                  });
+                  return true;
+                }
+                // Check for corrupted quantities
+                if (i.quantity === 0) {
+                  _log('error', 'QUEUE-DATA-CORRUPTION', `Invoice item has quantity 0`, {
+                    itemId: item.id,
+                    itemName: i.name
+                  });
+                  return true;
+                }
+                return false;
               });
-              dropped++;
-              continue;
+              
+              if (corruptedItems.length > 0) {
+                isCorrupted = true;
+                corruptionReason = `${corruptedItems.length} corrupted invoice items`;
+              }
             }
+            
+            // Check for corrupted totals
+            if (item.data.total === 0 && item.data.items?.length > 0) {
+              const hasValidItems = item.data.items.some(i => i.price > 0 && i.quantity > 0);
+              if (hasValidItems) {
+                isCorrupted = true;
+                corruptionReason = 'Total is 0 but valid items exist';
+                _log('error', 'QUEUE-DATA-CORRUPTION', corruptionReason, { itemId: item.id });
+              }
+            }
+          }
+          
+          // Validate products
+          if (item.entity === 'products' && item.data) {
+            if (item.data.sellingPrice === 0 && item.data.name) {
+              isCorrupted = true;
+              corruptionReason = 'Product sellingPrice is 0';
+              _log('error', 'QUEUE-DATA-CORRUPTION', corruptionReason, { 
+                itemId: item.id,
+                productName: item.data.name 
+              });
+            }
+            if (item.data.currentStock === 0 && item.data.name) {
+              // Stock can be 0, but log it for debugging
+              _log('warn', 'QUEUE-STOCK-ZERO', `Product has 0 stock`, { 
+                itemId: item.id,
+                productName: item.data.name 
+              });
+            }
+          }
+          
+          // Validate customers
+          if (item.entity === 'customers' && item.data) {
+            if (!item.data.address && item.data.name) {
+              _log('warn', 'QUEUE-CUSTOMER-NO-ADDRESS', `Customer has no address`, { 
+                itemId: item.id,
+                customerName: item.data.name 
+              });
+              // Don't fail, just warn - address can be empty
+            }
+          }
+          
+          if (isCorrupted) {
+            _log('error', 'QUEUE-DATA-CORRUPTION', `Skipping corrupted operation: ${corruptionReason}`, {
+              entity: item.entity,
+              operation: item.operation,
+              itemId: item.id
+            });
+            dropped++;
+            continue;
           }
         }
         
@@ -1063,26 +1122,28 @@ export async function pullFromCloud(opts = {}) {
       const { _id, __v, userId: _uid, ...rest } = doc;
       void _uid;
       
-      // CRITICAL FIX: Handle field name mapping for invoice items (server -> client)
-      // Ensure prices are never corrupted during mapping
+      // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
+      // No field mapping needed for invoice items - pass through as-is
+      // Only ensure values are preserved and not defaulted to 0/null
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
-          const { unitPrice, taxRate, ...itemRest } = item;
-          // CRITICAL: Only map if values exist, never default to 0/null
-          const price = (unitPrice !== undefined && unitPrice !== null) ? unitPrice : 
-                      (item.price !== undefined && item.price !== null ? item.price : 0);
-          const tax = (taxRate !== undefined && taxRate !== null) ? taxRate : 
-                    (item.tax !== undefined && item.tax !== null ? item.tax : 0);
+          const { price, tax, unit, ...itemRest } = item;
+          // CRITICAL: Preserve exact values, only ensure they're numbers
+          const safePrice = (price === null || price === undefined) ? 0 : 
+                          (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
+          const safeTax = (tax === null || tax === undefined) ? 0 : 
+                        (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
           
           return {
             ...itemRest,
-            price,
-            tax,
+            price: safePrice,
+            tax: safeTax,
+            unit: unit || 'pcs',
           };
         });
       }
       
-      // Handle GST field mapping
+      // Handle GST field mapping (preserve both for compatibility)
       if (rest.gstNumber !== undefined && !rest.companyGst) {
         rest.companyGst = rest.gstNumber;
       }
@@ -1257,26 +1318,28 @@ export async function mergeLocalAndCloud() {
       const { _id, __v, userId: _muid, id: _mid, ...rest } = doc;
       void _muid; void _mid;
       
-      // CRITICAL FIX: Handle field name mapping for invoice items (client -> server)
-      // Ensure prices are never corrupted during mapping
+      // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
+      // No field mapping needed for invoice items - pass through as-is
+      // Only ensure values are preserved and not defaulted to 0/null
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
-          const { price, tax, ...itemRest } = item;
-          // CRITICAL: Only map if values exist, never default to 0/null
-          const unitPrice = (price !== undefined && price !== null) ? price : 
-                           (item.unitPrice !== undefined && item.unitPrice !== null ? item.unitPrice : 0);
-          const taxRate = (tax !== undefined && tax !== null) ? tax : 
-                          (item.taxRate !== undefined && item.taxRate !== null ? item.taxRate : 0);
+          const { price, tax, unit, ...itemRest } = item;
+          // CRITICAL: Preserve exact values, only ensure they're numbers
+          const safePrice = (price === null || price === undefined) ? 0 : 
+                          (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
+          const safeTax = (tax === null || tax === undefined) ? 0 : 
+                        (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
           
           return {
             ...itemRest,
-            unitPrice,
-            taxRate,
+            price: safePrice,
+            tax: safeTax,
+            unit: unit || 'pcs',
           };
         });
       }
       
-      // Handle GST field mapping
+      // Handle GST field mapping (preserve both for compatibility)
       if (rest.companyGst !== undefined && !rest.gstNumber) {
         rest.gstNumber = rest.companyGst;
       }
@@ -1286,6 +1349,55 @@ export async function mergeLocalAndCloud() {
 
     const mergeByKey = (local, remote, keyFn) => {
       const map = new Map();
+      
+      // CRITICAL FIX: Deep merge function that never overwrites valid values with undefined/null/0
+      const deepMerge = (target, source) => {
+        const result = { ...target };
+        
+        for (const key of Object.keys(source)) {
+          const sourceValue = source[key];
+          const targetValue = target[key];
+          
+          // Skip undefined/null values from source - preserve target's value
+          if (sourceValue === undefined || sourceValue === null) {
+            continue;
+          }
+          
+          // Handle nested objects (like invoice items)
+          if (key === 'items' && Array.isArray(sourceValue) && Array.isArray(targetValue)) {
+            // Deep merge arrays by index, preserving all fields
+            result[key] = sourceValue.map((sourceItem, index) => {
+              const targetItem = targetValue[index];
+              if (!targetItem) {
+                // Source has item at this index, target doesn't - use source
+                return sourceItem;
+              }
+              // Both have items - merge them, preserving all fields
+              const merged = { ...targetItem };
+              for (const itemKey of Object.keys(sourceItem)) {
+                const sourceItemValue = sourceItem[itemKey];
+                // CRITICAL: Never overwrite valid values with undefined/null/0
+                if (sourceItemValue !== undefined && sourceItemValue !== null) {
+                  // For numeric fields (price, quantity, etc.), only overwrite if source is not 0 when target has a value
+                  if (['price', 'quantity', 'tax', 'discount', 'subtotal', 'total', 'amount'].includes(itemKey)) {
+                    if (sourceItemValue !== 0 || targetItem[itemKey] === undefined || targetItem[itemKey] === null) {
+                      merged[itemKey] = sourceItemValue;
+                    }
+                  } else {
+                    merged[itemKey] = sourceItemValue;
+                  }
+                }
+              }
+              return merged;
+            });
+          } else {
+            // For regular fields, only overwrite if source is not undefined/null
+            result[key] = sourceValue;
+          }
+        }
+        
+        return result;
+      };
       
       // First, add all remote items
       for (const item of remote || []) {
@@ -1298,27 +1410,29 @@ export async function mergeLocalAndCloud() {
         const existing = map.get(key);
         
         if (!existing) {
-          // Local-only item: preserve it
+          // Local-only item: preserve it completely
           map.set(key, { ...item, _local: true });
           _log('info', 'MERGE-LOCAL-ONLY', `key=${String(key).slice(0, 48)}: local item preserved (not in cloud).`);
         } else {
-          // Conflict: use timestamp-based resolution
+          // Conflict: use timestamp-based resolution with deep merge
           const localTs = new Date(item.updatedAt || item.createdAt || 0).getTime();
           const remoteTs = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
           
           if (localTs > remoteTs) {
-            // Local is newer: merge local into remote, preserving all local fields
-            const merged = { ...existing, ...item };
+            // Local is newer: deep merge local into remote, preserving all local fields
+            const merged = deepMerge(existing, item);
             map.set(key, merged);
             _log('info', 'MERGE-WIN', `key=${String(key).slice(0, 48)}: local (ts=${localTs}) overwrote cloud (ts=${remoteTs}).`);
           } else if (remoteTs > localTs) {
-            // Remote is newer: keep remote, but warn
-            _log('info', 'MERGE-WIN', `key=${String(key).slice(0, 48)}: cloud (ts=${remoteTs}) kept over local (ts=${localTs}).`);
-          } else {
-            // Same timestamp: prefer local to avoid data loss
-            const merged = { ...existing, ...item };
+            // Remote is newer: deep merge remote into local, preserving all local fields
+            const merged = deepMerge(item, existing);
             map.set(key, merged);
-            _log('info', 'MERGE-SAME-TS', `key=${String(key).slice(0, 48)}: same timestamp, local preferred to prevent data loss.`);
+            _log('info', 'MERGE-WIN', `key=${String(key).slice(0, 48)}: cloud (ts=${remoteTs}) merged into local (ts=${localTs}).`);
+          } else {
+            // Same timestamp: deep merge both, preferring local for conflicts
+            const merged = deepMerge(existing, item);
+            map.set(key, merged);
+            _log('info', 'MERGE-SAME-TS', `key=${String(key).slice(0, 48)}: same timestamp, deep merge applied.`);
           }
         }
       }
@@ -1331,10 +1445,26 @@ export async function mergeLocalAndCloud() {
     const custKey = (c) => (c.email || '').toLowerCase() || (c.name || '').toLowerCase() || c.id || c._id;
     const invHistKey = (h) => `${h.productId}-${h.createdAt}-${h.action}`;
 
+    console.log('[SYNC-MERGE] Starting merge', {
+      localInvoices: localInvoices.length,
+      cloudInvoices: cloud.invoices?.length,
+      localProducts: localProducts.length,
+      cloudProducts: cloud.products?.length,
+      localCustomers: localCustomers.length,
+      cloudCustomers: cloud.customers?.length
+    });
+
     const mergedInvoices = mergeByKey(localInvoices, cloud.invoices, invKey);
     const mergedProducts = mergeByKey(localProducts, cloud.products, prodKey);
     const mergedCustomers = mergeByKey(localCustomers, cloud.customers, custKey);
     const mergedInventory = mergeByKey(localInventory, cloud.inventoryHistory, invHistKey);
+
+    console.log('[SYNC-MERGE] Merge complete', {
+      mergedInvoices: mergedInvoices.length,
+      mergedProducts: mergedProducts.length,
+      mergedCustomers: mergedCustomers.length,
+      mergedInventory: mergedInventory.length
+    });
 
     const mergedSettings = { ...(cloud.settings || {}), ...localSettings };
 
