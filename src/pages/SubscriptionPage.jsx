@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { toast } from 'sonner';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
-import { Check, Rocket, Sparkles } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Check, Bell, Sparkles, TrendingUp, DollarSign, FileText, Users, Package, AlertTriangle, BarChart3, PieChart, LineChart, Receipt } from 'lucide-react';
 import api from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -17,116 +19,182 @@ export default function SubscriptionPage() {
     }
   }, [isAuthenticated]);
 
-  const features = [
-    'Unlimited invoices',
-    'Unlimited products & inventory',
-    'Unlimited customers',
-    'Cloud sync across devices',
-    'PDF generation & ZIP export',
-    'Multi-currency support',
-    'Priority email support',
-    'Advanced analytics & reports',
-    'Custom invoice templates',
-    'Team collaboration (upcoming)',
+  const handleNotify = (planName) => {
+    toast.success(`InvoiceHub ${planName} is coming soon.`);
+  };
+
+  const reportCards = [
+    { icon: DollarSign, label: 'Total Revenue', color: 'text-violet-500', bg: 'bg-violet-500/10' },
+    { icon: TrendingUp, label: 'Total Profit', color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { icon: FileText, label: 'Total Invoices', color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { icon: BarChart3, label: 'Average Invoice Value', color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    { icon: Users, label: 'Top Customers', color: 'text-pink-500', bg: 'bg-pink-500/10' },
+    { icon: Package, label: 'Top Selling Products', color: 'text-orange-500', bg: 'bg-orange-500/10' },
+    { icon: AlertTriangle, label: 'Lowest Stock Products', color: 'text-red-500', bg: 'bg-red-500/10' },
+    { icon: TrendingUp, label: 'Revenue Growth', color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
+    { icon: LineChart, label: 'Monthly Revenue Chart', color: 'text-indigo-500', bg: 'bg-indigo-500/10' },
+    { icon: PieChart, label: 'Monthly Profit Chart', color: 'text-purple-500', bg: 'bg-purple-500/10' },
+    { icon: Receipt, label: 'Tax Summary', color: 'text-teal-500', bg: 'bg-teal-500/10' },
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-12">
       <PageHeader
         title="Subscription"
-        description="Manage your InvoiceHub plan and billing."
+        description="Choose the perfect plan for your business needs."
       />
 
-      <div className="mx-auto w-full max-w-5xl">
-        <Card className="relative overflow-hidden border-primary/20 bg-gradient-to-br from-primary/5 via-background to-accent/20">
-          <CardContent className="p-8 md:p-10">
-            <div className="flex flex-col lg:flex-row lg:items-center gap-8">
-              <div className="flex-1 space-y-5">
-                <div className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-                  <Sparkles className="h-3 w-3" />
-                  InvoiceHub Premium
+      {/* Pricing Cards */}
+      <div className="mx-auto w-full max-w-6xl">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Free Plan */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <Card className="h-full border-border/50 hover:border-border transition-all duration-300">
+              <CardHeader className="pb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <CardTitle className="text-lg">Free</CardTitle>
+                  <Badge variant="secondary" className="text-xs">Current Plan</Badge>
                 </div>
-
-                <div>
-                  <h2 className="text-3xl font-bold tracking-tight md:text-4xl">
-                    Everything you need,{' '}
-                    <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-                      nothing you don&apos;t
-                    </span>
-                  </h2>
-                  <p className="mt-3 text-sm text-muted-foreground md:text-base">
-                    Unlock the full power of InvoiceHub with automatic cloud sync, priority support, and upcoming premium features.
-                  </p>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-4xl font-bold">₹0</span>
+                  <span className="text-sm text-muted-foreground">/month</span>
                 </div>
-
-                <div className="flex items-end gap-2">
-                  <span className="text-5xl font-extrabold tracking-tight">₹500</span>
-                  <span className="pb-2 text-base text-muted-foreground">/ month</span>
-                </div>
-
-                <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 pt-2">
-                  {features.map((f) => (
-                    <li key={f} className="flex items-start gap-2 text-sm">
-                      <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                        <Check className="h-2.5 w-2.5" />
-                      </div>
-                      <span className="text-foreground/80">{f}</span>
+                <CardDescription className="mt-2">
+                  Perfect for personal use and offline invoicing.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <ul className="space-y-3">
+                  {['Unlimited invoices', 'Unlimited customers', 'Unlimited products', 'Offline mode', 'PDF generation', 'Local backup & restore', 'Basic support'].map((feature) => (
+                    <li key={feature} className="flex items-start gap-2 text-sm">
+                      <Check className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                      <span className="text-muted-foreground">{feature}</span>
                     </li>
                   ))}
                 </ul>
+                <Button disabled variant="outline" className="w-full mt-4">
+                  Current Plan
+                </Button>
+              </CardContent>
+            </Card>
+          </motion.div>
 
-                <div className="pt-4 flex flex-wrap items-center gap-3">
-                  <Button
-                    size="lg"
-                    disabled
-                    className="h-10 px-6 gap-2"
-                  >
-                    <Rocket className="h-4 w-4" />
-                    Coming Soon
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    Premium subscription launching soon. Stay on the free plan until then.
-                  </p>
+          {/* Pro Plan */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.1 }}
+          >
+            <Card className="h-full border-border/50 hover:border-border transition-all duration-300">
+              <CardHeader className="pb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <CardTitle className="text-lg">Pro</CardTitle>
+                  <Badge variant="outline" className="text-xs">Coming Soon</Badge>
                 </div>
-              </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-4xl font-bold">₹499</span>
+                  <span className="text-sm text-muted-foreground">/month</span>
+                </div>
+                <CardDescription className="mt-2">
+                  Ideal for freelancers and small businesses.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <ul className="space-y-3">
+                  {['Everything in Free', 'Cloud Sync', 'Access from multiple devices', 'Automatic backup', 'Invoice templates', 'Multi-currency support', 'Priority email support'].map((feature) => (
+                    <li key={feature} className="flex items-start gap-2 text-sm">
+                      <Check className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                      <span className="text-foreground/80">{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button variant="outline" className="w-full mt-4 gap-2" onClick={() => handleNotify('Pro')}>
+                  <Bell className="h-4 w-4" />
+                  Notify Me
+                </Button>
+              </CardContent>
+            </Card>
+          </motion.div>
 
-              <div className="w-full lg:w-80 shrink-0">
-                <div className="rounded-xl border bg-card shadow-sm">
-                  <div className="p-5 border-b border-border">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                        Current plan
-                      </p>
-                      <span className="inline-flex items-center rounded-md bg-secondary px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
-                        {plan === 'premium' ? 'Premium' : 'Free'}
-                      </span>
-                    </div>
-                    <p className="mt-4 text-2xl font-bold">
-                      {plan === 'premium' ? 'InvoiceHub Premium' : 'InvoiceHub Free'}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {plan === 'premium' ? 'Billed monthly at ₹500' : 'No charge — full offline access'}
-                    </p>
-                  </div>
-                  <div className="p-5 space-y-3 text-xs">
-                    <Separator />
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Cloud sync</span>
-                      <span className="text-foreground">{isAuthenticated ? 'Enabled' : 'Login to enable'}</span>
-                    </div>
-                    <Separator />
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Invoices</span>
-                      <span className="text-foreground">Unlimited</span>
-                    </div>
-                    <Separator />
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Support</span>
-                      <span className="text-foreground">Standard</span>
-                    </div>
-                  </div>
+          {/* Business Plan */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.2 }}
+          >
+            <Card className="h-full relative border-primary/30 shadow-lg shadow-primary/5 hover:shadow-primary/10 transition-all duration-300">
+              <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent rounded-xl pointer-events-none" />
+              <CardHeader className="pb-4 relative">
+                <div className="flex items-center justify-between mb-2">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    Business
+                    <Sparkles className="h-4 w-4 text-primary" />
+                  </CardTitle>
+                  <Badge variant="outline" className="text-xs border-primary/30 text-primary">Coming Soon</Badge>
                 </div>
-              </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-4xl font-bold">₹4,999</span>
+                  <span className="text-sm text-muted-foreground">/month</span>
+                </div>
+                <CardDescription className="mt-2">
+                  Designed for growing businesses.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 relative">
+                <ul className="space-y-3">
+                  {['Everything in Pro', 'Monthly Founder Report', 'Revenue analytics', 'Profit & Margin analytics', 'Top-selling products', 'Top customers', 'Inventory insights', 'GST / Tax reports', 'CSV & Excel exports', 'White-label invoices (Coming Soon)', 'Team collaboration (Coming Soon)', 'API Access (Coming Soon)', 'Dedicated founder support'].map((feature) => (
+                    <li key={feature} className="flex items-start gap-2 text-sm">
+                      <Check className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                      <span className="text-foreground/80">{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button className="w-full mt-4 gap-2" onClick={() => handleNotify('Business')}>
+                  <Bell className="h-4 w-4" />
+                  Notify Me
+                </Button>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* Monthly Founder Report Section */}
+      <div className="mx-auto w-full max-w-6xl">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-bold tracking-tight mb-2">Monthly Founder Report</h2>
+          <p className="text-muted-foreground text-sm">
+            Automatically generated and emailed at the end of every month.
+          </p>
+        </div>
+        
+        <Card className="border-border/50">
+          <CardContent className="p-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {reportCards.map((card, index) => (
+                <motion.div
+                  key={card.label}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: 0.2, delay: index * 0.05 }}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border/30 bg-card/50 hover:bg-card/80 transition-colors"
+                >
+                  <div className={`rounded-lg p-2 ${card.bg}`}>
+                    <card.icon className={`h-4 w-4 ${card.color}`} />
+                  </div>
+                  <span className="text-sm font-medium text-foreground/80">{card.label}</span>
+                </motion.div>
+              ))}
+            </div>
+            
+            <div className="mt-6 pt-6 border-t border-border/30 text-center">
+              <p className="text-sm text-muted-foreground">
+                Available with the <span className="text-primary font-medium">Business Plan</span>.
+              </p>
             </div>
           </CardContent>
         </Card>
