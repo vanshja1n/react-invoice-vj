@@ -36,12 +36,16 @@ const invoiceSchema = new mongoose.Schema({
     discount: { type: Number, default: 0 },
     unit: { type: String, default: 'pcs' },
   }],
-  subtotal: Number,
+  subtotal: Number,          // lowercase — original Mongoose field
+  subTotal: Number,          // camelCase — canonical client field (alias)
   taxAmount: Number,
   discountAmount: Number,
-  shippingCharges: Number, // Added to match client schema
+  shippingCharges: Number,
   total: Number,
-  amount: Number, // Ensure consistency with total field
+  amount: Number,            // alias kept for backward compat
+  grandTotal: Number,        // alias used by PDF templates
+  taxRate: Number,
+  discountRate: Number,
   customerId: mongoose.Schema.Types.Mixed,
   currency: String,
   template: String,

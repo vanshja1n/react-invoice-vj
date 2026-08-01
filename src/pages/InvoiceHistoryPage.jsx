@@ -12,6 +12,7 @@ import {
   Download,
   Printer,
   Trash2,
+  Ban,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -50,6 +51,7 @@ export default function InvoiceHistoryPage() {
     refresh,
     remove,
     add,
+    cancel,
     search,
     filterByStatus,
     filterByCustomer,
@@ -65,6 +67,7 @@ export default function InvoiceHistoryPage() {
   const [dateTo, setDateTo] = useState('');
   const [sortBy, setSortBy] = useState('createdAt-desc');
   const [deleteId, setDeleteId] = useState(null);
+  const [cancelId, setCancelId] = useState(null);
 
   const handleSearch = useCallback((q) => {
     setSearchQuery(q);
@@ -131,6 +134,18 @@ export default function InvoiceHistoryPage() {
       toast.error('Failed to delete invoice');
     } finally {
       setDeleteId(null);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (cancelId === null) return;
+    try {
+      await cancel(cancelId);
+      toast.success('Invoice cancelled');
+    } catch (e) {
+      toast.error(`Failed to cancel invoice: ${e?.message || e}`);
+    } finally {
+      setCancelId(null);
     }
   };
 
@@ -348,6 +363,7 @@ export default function InvoiceHistoryPage() {
                                 onDuplicate={() => handleDuplicate(inv)}
                                 onDownload={() => handleDownloadPdf(inv)}
                                 onPrint={() => handlePrint(inv)}
+                                onCancel={() => setCancelId(inv.id)}
                                 onDelete={() => setDeleteId(inv.id)}
                               />
                             </td>
@@ -390,6 +406,7 @@ export default function InvoiceHistoryPage() {
                             onDuplicate={() => handleDuplicate(inv)}
                             onDownload={() => handleDownloadPdf(inv)}
                             onPrint={() => handlePrint(inv)}
+                            onCancel={() => setCancelId(inv.id)}
                             onDelete={() => setDeleteId(inv.id)}
                           />
                         </div>
@@ -442,11 +459,22 @@ export default function InvoiceHistoryPage() {
         onConfirm={handleDelete}
       />
 
+      {/* Cancel Confirmation */}
+      <ConfirmDialog
+        open={cancelId !== null}
+        onOpenChange={(open) => { if (!open) setCancelId(null); }}
+        title="Cancel Invoice"
+        description="Mark this invoice as Cancelled? Stock adjustments will be reversed and the invoice will become read-only."
+        confirmLabel="Cancel Invoice"
+        onConfirm={handleCancel}
+      />
+
     </div>
   );
 }
 
-function InvoiceActions({ onEdit, onPreview, onDuplicate, onDownload, onPrint, onDelete }) {
+function InvoiceActions({ invoice, onEdit, onPreview, onDuplicate, onDownload, onPrint, onCancel, onDelete }) {
+  const isCancelled = invoice?.status === 'cancelled';
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -455,7 +483,7 @@ function InvoiceActions({ onEdit, onPreview, onDuplicate, onDownload, onPrint, o
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem onClick={onEdit}>
+        <DropdownMenuItem onClick={onEdit} disabled={isCancelled}>
           <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onPreview}>
@@ -472,6 +500,14 @@ function InvoiceActions({ onEdit, onPreview, onDuplicate, onDownload, onPrint, o
           <Printer className="h-3.5 w-3.5 mr-2" /> Print
         </DropdownMenuItem>
         <DropdownMenuSeparator />
+        {!isCancelled && (
+          <DropdownMenuItem
+            onClick={onCancel}
+            className="text-amber-600 focus:text-amber-600 dark:text-amber-400"
+          >
+            <Ban className="h-3.5 w-3.5 mr-2" /> Cancel Invoice
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
           <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete
         </DropdownMenuItem>

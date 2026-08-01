@@ -24,33 +24,62 @@ export function getTemplateConfig(templateId) {
 
 /**
  * Prepare invoice data for rendering (PDF, preview, print).
- * Strips empty line items and uses stored totals when available for consistency.
- * Only recalculates if stored totals are missing or invalid.
+ * Strips empty line items and resolves totals with full backward compatibility:
+ *  - Accepts both camelCase "subTotal" and lowercase "subtotal" from stored docs
+ *  - Falls back to recalculating from line items when stored totals are absent
+ *  - Always emits the full canonical set of financial fields
  */
 export function prepareInvoiceForRender(invoice) {
   if (!invoice) return null;
 
   const validItems = filterValidItems(invoice.items || []);
-  
-  // Use stored totals if they exist and are valid, otherwise recalculate
-  const hasValidTotals = (
-    typeof invoice.total === 'number' && 
-    !isNaN(invoice.total) &&
-    typeof invoice.subTotal === 'number' &&
-    !isNaN(invoice.subTotal)
-  );
-  
-  const totals = hasValidTotals ? {
-    subTotal: invoice.subTotal,
-    taxAmount: invoice.taxAmount || 0,
-    discountAmount: invoice.discountAmount || 0,
-    total: invoice.total,
-  } : calculateInvoiceTotals(
-    validItems,
-    invoice.taxRate,
-    invoice.discountRate,
-    invoice.shippingCharges,
-  );
+
+  // Resolve subTotal from either casing — old docs may have only "subtotal"
+  const resolvedSubTotal =
+    typeof invoice.subTotal === 'number' && !isNaN(invoice.subTotal)
+      ? invoice.subTotal
+      : typeof invoice.subtotal === 'number' && !isNaN(invoice.subtotal)
+        ? invoice.subtotal
+        : null;
+
+  const resolvedTotal =
+    typeof invoice.total === 'number' && !isNaN(invoice.total)
+      ? invoice.total
+      : typeof invoice.amount === 'number' && !isNaN(invoice.amount)
+        ? invoice.amount
+        : null;
+
+  const hasValidTotals = resolvedSubTotal !== null && resolvedTotal !== null;
+
+  const totals = hasValidTotals
+    ? {
+        subTotal:       resolvedSubTotal,
+        subtotal:       resolvedSubTotal,   // lowercase alias
+        taxAmount:      typeof invoice.taxAmount === 'number' ? invoice.taxAmount : 0,
+        discountAmount: typeof invoice.discountAmount === 'number' ? invoice.discountAmount : 0,
+        shippingCharges: typeof invoice.shippingCharges === 'number' ? invoice.shippingCharges : 0,
+        total:          resolvedTotal,
+        amount:         resolvedTotal,
+        grandTotal:     resolvedTotal,
+      }
+    : (() => {
+        const calc = calculateInvoiceTotals(
+          validItems,
+          invoice.taxRate,
+          invoice.discountRate,
+          invoice.shippingCharges,
+        );
+        return {
+          subTotal:       calc.subTotal,
+          subtotal:       calc.subTotal,
+          taxAmount:      calc.taxAmount,
+          discountAmount: calc.discountAmount,
+          shippingCharges: parseFloat(invoice.shippingCharges || 0),
+          total:          calc.total,
+          amount:         calc.total,
+          grandTotal:     calc.total,
+        };
+      })();
 
   return {
     ...invoice,

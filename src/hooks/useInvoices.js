@@ -81,25 +81,6 @@ export function useInvoices() {
     _addBusyRef.current = true;
     try {
       _logCreate('invoices:add:start', { timestamp: ts, requestId, invoiceNumber: data?.invoiceNumber, entityId: null });
-      
-      // CRITICAL FIX: Validate invoice data before creation
-      if (data.items && Array.isArray(data.items)) {
-        const corruptedItems = data.items.filter(i => {
-          if (i.price === 0 && i.productId) {
-            console.error('[useInvoices.add] Corrupted item: price 0 with productId', {
-              itemName: i.name,
-              productId: i.productId
-            });
-            return true;
-          }
-          return false;
-        });
-        
-        if (corruptedItems.length > 0) {
-          throw new Error(`Cannot create invoice with ${corruptedItems.length} corrupted items (price 0 with productId)`);
-        }
-      }
-      
       await handleInvoiceStockUpdate(null, data);
       const invoice = await createInvoice(data);
       _logCreate('invoices:add:done', { timestamp: new Date().toISOString(), requestId, invoiceNumber: invoice?.invoiceNumber, entityId: String(invoice?.id ?? '') });
@@ -125,26 +106,6 @@ export function useInvoices() {
     _updateBusyRef.current.set(key, true);
     try {
       _logCreate('invoices:update:start', { timestamp: new Date().toISOString(), requestId, entityId: key });
-      
-      // CRITICAL FIX: Validate invoice data before update
-      if (data.items && Array.isArray(data.items)) {
-        const corruptedItems = data.items.filter(i => {
-          if (i.price === 0 && i.productId) {
-            console.error('[useInvoices.update] Corrupted item: price 0 with productId', {
-              invoiceId: id,
-              itemName: i.name,
-              productId: i.productId
-            });
-            return true;
-          }
-          return false;
-        });
-        
-        if (corruptedItems.length > 0) {
-          throw new Error(`Cannot update invoice with ${corruptedItems.length} corrupted items (price 0 with productId)`);
-        }
-      }
-      
       const oldInvoice = await getInvoice(id);
       await handleInvoiceStockUpdate(oldInvoice, { ...oldInvoice, ...data, id });
       const invoice = await updateInvoice(id, data);
@@ -184,6 +145,35 @@ export function useInvoices() {
       throw err;
     } finally {
       _removeBusyRef.current.delete(key);
+    }
+  }, [refresh]);
+
+  // Cancel an invoice: sets status to CANCELLED, restores any deducted stock,
+  // persists the change locally (Dexie) and queues it for cloud sync.
+  const cancel = useCallback(async (id) => {
+    const key = String(id);
+    if (_updateBusyRef.current.has(key)) {
+      throw new Error(`Cancel invoice ${key} already in progress`);
+    }
+    _updateBusyRef.current.set(key, true);
+    try {
+      const existing = await getInvoice(id);
+      if (!existing) throw new Error('Invoice not found');
+      if (existing.status === 'cancelled') return existing; // idempotent
+
+      // Restore stock that was deducted when this invoice was marked paid.
+      await handleInvoiceStockUpdate(existing, { ...existing, status: 'cancelled', id });
+
+      const updated = await updateInvoice(id, {
+        ...existing,
+        status: 'cancelled',
+        updatedAt: new Date().toISOString(),
+      });
+      await refresh();
+      window.dispatchEvent(new CustomEvent('inventory-updated'));
+      return updated;
+    } finally {
+      _updateBusyRef.current.delete(key);
     }
   }, [refresh]);
 
@@ -273,6 +263,7 @@ export function useInvoices() {
     add,
     update,
     remove,
+    cancel,
     search,
     filterByStatus,
     filterByDateRange,

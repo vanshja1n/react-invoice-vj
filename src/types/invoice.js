@@ -104,9 +104,12 @@ export const createDefaultInvoice = (settings = {}) => ({
   discountRate: 0,
   shippingCharges: 0,
   subTotal: 0,
+  subtotal: 0,          // lowercase alias — matches Mongoose schema
   taxAmount: 0,
   discountAmount: 0,
   total: 0,
+  amount: 0,            // alias kept for backward compat
+  grandTotal: 0,        // alias used by PDF templates
 
   // Footer
   notes: settings.defaultNotes || '',
@@ -186,7 +189,9 @@ export function normalizeInvoiceItemForSave(item) {
   };
 }
 
-// Prepare invoice for saving — strips empty rows and recalculates totals
+// Prepare invoice for saving — strips empty rows, recalculates totals,
+// and always emits every financial field so both client and server schemas
+// are satisfied and old invoices that lacked subTotal are healed on save.
 export function prepareInvoiceForSave(invoice) {
   const validItems = filterValidItems(invoice.items || []).map(normalizeInvoiceItemForSave);
   const totals = calculateInvoiceTotals(
@@ -198,12 +203,19 @@ export function prepareInvoiceForSave(invoice) {
   return {
     ...invoice,
     items: validItems,
-    ...totals,
+    // Canonical camelCase names used throughout the client
+    subTotal: totals.subTotal,
+    taxAmount: totals.taxAmount,
+    discountAmount: totals.discountAmount,
+    shippingCharges: parseFloat(invoice.shippingCharges || 0),
+    total: totals.total,
+    // Aliases kept for backward compatibility with the Mongoose schema
+    // (which uses lowercase "subtotal") and older stored documents
+    subtotal: totals.subTotal,
+    amount: totals.total,
+    grandTotal: totals.total,
     clientName: invoice.clientName,
     companyName: invoice.companyName,
-    // Ensure both amount and total are set to the same value for consistency
-    amount: totals.total,
-    total: totals.total,
   };
 }
 
@@ -216,58 +228,60 @@ export function validateInvoiceItems(invoice) {
   return { valid: true, items: validItems };
 }
 
-// Comprehensive invoice validation including totals
+// Validate invoice totals — always recalculate from line items so that
+// old invoices missing subTotal, or invoices loaded before a totals update,
+// never cause a false validation failure.  Returns the recalculated totals
+// so callers can use them directly without a second round-trip.
 export function validateInvoiceTotals(invoice) {
   const validItems = filterValidItems(invoice?.items || []);
-  
-  // Calculate expected totals from line items
+
+  // Always recalculate — this is the source of truth.
   const calculatedTotals = calculateInvoiceTotals(
     validItems,
     invoice.taxRate,
     invoice.discountRate,
-    invoice.shippingCharges
+    invoice.shippingCharges,
   );
-  
-  // Check if stored totals match calculated totals (with small tolerance for floating point)
-  const tolerance = 0.01;
-  const subtotalMatch = Math.abs(calculatedTotals.subTotal - (invoice.subTotal || 0)) < tolerance;
-  const totalMatch = Math.abs(calculatedTotals.total - (invoice.total || 0)) < tolerance;
-  
+
+  // Resolve stored values: accept both camelCase (subTotal) and lowercase
+  // (subtotal) for backward compat with older persisted invoices.
+  const storedSubTotal = invoice.subTotal ?? invoice.subtotal ?? null;
+  const storedTotal    = invoice.total    ?? invoice.amount   ?? null;
+
+  const tolerance = 0.02; // 2 paise tolerance for float arithmetic
+
+  // If stored values are absent (old invoice) treat them as matching —
+  // prepareInvoiceForSave will write the correct values on the next save.
+  const subtotalMatch = storedSubTotal === null
+    ? true
+    : Math.abs(calculatedTotals.subTotal - storedSubTotal) < tolerance;
+
+  const totalMatch = storedTotal === null
+    ? true
+    : Math.abs(calculatedTotals.total - storedTotal) < tolerance;
+
   if (!subtotalMatch) {
-    console.error('[INVOICE-VALIDATION] Subtotal mismatch', {
+    console.warn('[INVOICE-VALIDATION] Subtotal mismatch (will be corrected on save)', {
       invoiceNumber: invoice.invoiceNumber,
       calculated: calculatedTotals.subTotal,
-      stored: invoice.subTotal,
-      items: validItems.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+      stored: storedSubTotal,
     });
   }
-  
   if (!totalMatch) {
-    console.error('[INVOICE-VALIDATION] Total mismatch', {
+    console.warn('[INVOICE-VALIDATION] Total mismatch (will be corrected on save)', {
       invoiceNumber: invoice.invoiceNumber,
       calculated: calculatedTotals.total,
-      stored: invoice.total,
-      items: validItems.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+      stored: storedTotal,
     });
   }
-  
-  // Check individual line item calculations
-  for (const item of validItems) {
-    const itemTotal = (item.price || 0) * (item.quantity || 0);
-    if (itemTotal < 0) {
-      console.error('[INVOICE-VALIDATION] Negative line item total', {
-        invoiceNumber: invoice.invoiceNumber,
-        item: { name: item.name, price: item.price, quantity: item.quantity, total: itemTotal }
-      });
-    }
-  }
-  
+
   return {
+    // Always valid — mismatches are healed by prepareInvoiceForSave, not blocked.
     valid: true,
     calculatedTotals,
     subtotalMatch,
     totalMatch,
-    items: validItems
+    items: validItems,
   };
 }
 

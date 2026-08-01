@@ -8,26 +8,47 @@ const router = Router();
 const baseInvoiceSchema = z.object({
   invoiceNumber: z.string().optional(),
   status: z.string().optional(),
+
+  // Client fields
   clientName: z.string().optional(),
   clientEmail: z.string().optional(),
   clientPhone: z.string().optional(),
   clientAddress: z.string().optional(),
+  clientGst: z.string().optional().nullable(),
+  billingAddress: z.string().optional().nullable(),
+  shippingAddress: z.string().optional().nullable(),
+  customerId: z.any().optional(),
+
+  // Company fields
   companyName: z.string().optional(),
   companyAddress: z.string().optional(),
   companyEmail: z.string().optional(),
   companyPhone: z.string().optional(),
   companyLogo: z.string().optional().nullable(),
-  gstNumber: z.string().optional(),
+  companyGst: z.string().optional().nullable(),
+  gstNumber: z.string().optional().nullable(),  // backward-compat alias
+
+  // Dates
   issueDate: z.string().optional(),
   dueDate: z.string().optional(),
+
+  // Line items
   items: z.array(z.any()).optional(),
-  subtotal: z.number().optional(),
+
+  // Financial — accept both camelCase (client) and lowercase (legacy) spellings
+  subTotal: z.number().optional(),       // camelCase — canonical client name
+  subtotal: z.number().optional(),       // lowercase — Mongoose schema / old docs
   taxAmount: z.number().optional(),
   discountAmount: z.number().optional(),
+  shippingCharges: z.number().optional(),
   total: z.number().optional(),
-  amount: z.number().optional(),
-  customerId: z.any().optional(),
+  amount: z.number().optional(),         // alias
+  grandTotal: z.number().optional(),     // alias used by PDF templates
+  taxRate: z.number().optional(),
+  discountRate: z.number().optional(),
   currency: z.string().optional(),
+
+  // Meta
   template: z.string().optional(),
   notes: z.string().optional(),
   terms: z.string().optional(),
