@@ -187,7 +187,9 @@ export function prepareInvoiceForSave(invoice) {
     ...totals,
     clientName: invoice.clientName,
     companyName: invoice.companyName,
+    // Ensure both amount and total are set to the same value for consistency
     amount: totals.total,
+    total: totals.total,
   };
 }
 

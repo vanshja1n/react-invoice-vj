@@ -24,13 +24,28 @@ export function getTemplateConfig(templateId) {
 
 /**
  * Prepare invoice data for rendering (PDF, preview, print).
- * Strips empty line items and recalculates totals.
+ * Strips empty line items and uses stored totals when available for consistency.
+ * Only recalculates if stored totals are missing or invalid.
  */
 export function prepareInvoiceForRender(invoice) {
   if (!invoice) return null;
 
   const validItems = filterValidItems(invoice.items || []);
-  const totals = calculateInvoiceTotals(
+  
+  // Use stored totals if they exist and are valid, otherwise recalculate
+  const hasValidTotals = (
+    typeof invoice.total === 'number' && 
+    !isNaN(invoice.total) &&
+    typeof invoice.subTotal === 'number' &&
+    !isNaN(invoice.subTotal)
+  );
+  
+  const totals = hasValidTotals ? {
+    subTotal: invoice.subTotal,
+    taxAmount: invoice.taxAmount || 0,
+    discountAmount: invoice.discountAmount || 0,
+    total: invoice.total,
+  } : calculateInvoiceTotals(
     validItems,
     invoice.taxRate,
     invoice.discountRate,

@@ -208,8 +208,9 @@ export function useInvoices() {
         let bVal = b[field];
 
         if (field === 'total' || field === 'amount') {
-          aVal = parseFloat(aVal || 0);
-          bVal = parseFloat(bVal || 0);
+          // Handle both total and amount fields for consistency
+          aVal = parseFloat(a.total || a.amount || 0);
+          bVal = parseFloat(b.total || b.amount || 0);
         } else if (field === 'createdAt' || field === 'updatedAt') {
           aVal = new Date(aVal || 0).getTime();
           bVal = new Date(bVal || 0).getTime();

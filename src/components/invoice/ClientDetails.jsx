@@ -19,6 +19,7 @@ export function ClientDetails({ data, onChange }) {
       clientEmail: customer.email || '',
       clientPhone: customer.phone || '',
       billingAddress: customer.address || '',
+      shippingAddress: customer.address || '', // Default shipping to same address
       clientGst: customer.gstNumber || '',
     });
   };

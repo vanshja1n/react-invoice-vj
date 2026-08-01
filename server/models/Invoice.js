@@ -13,12 +13,16 @@ const invoiceSchema = new mongoose.Schema({
   clientEmail: String,
   clientPhone: String,
   clientAddress: String,
+  billingAddress: String, // Added to match client schema
+  shippingAddress: String, // Added to match client schema
   companyName: String,
   companyAddress: String,
   companyEmail: String,
   companyPhone: String,
   companyLogo: String,
-  gstNumber: String,
+  gstNumber: String, // Keep original for backward compatibility
+  companyGst: String, // Added to match client schema
+  clientGst: String, // Added to match client schema
   issueDate: String,
   dueDate: String,
   items: [{
@@ -26,16 +30,18 @@ const invoiceSchema = new mongoose.Schema({
     name: String,
     description: String,
     quantity: Number,
-    unitPrice: Number,
-    taxRate: Number,
+    price: Number, // Changed from unitPrice to match client schema
+    tax: Number, // Changed from taxRate to match client schema
     sku: String,
     discount: Number,
+    unit: String, // Added to match client schema
   }],
   subtotal: Number,
   taxAmount: Number,
   discountAmount: Number,
+  shippingCharges: Number, // Added to match client schema
   total: Number,
-  amount: Number,
+  amount: Number, // Ensure consistency with total field
   customerId: mongoose.Schema.Types.Mixed,
   currency: String,
   template: String,

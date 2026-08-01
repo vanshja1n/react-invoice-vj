@@ -498,6 +498,25 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     if (Array.isArray(doc)) return doc.map(strip);
     const { id: _idAlias, _id, userId: _uid, __v, ...rest } = doc;
     void _idAlias; void _uid;
+    
+    // Handle field name mapping for invoice items (client -> server)
+    if (rest.items && Array.isArray(rest.items)) {
+      rest.items = rest.items.map(item => {
+        const { price, tax, ...itemRest } = item;
+        // Map client field names to server field names
+        return {
+          ...itemRest,
+          unitPrice: price !== undefined ? price : item.unitPrice,
+          taxRate: tax !== undefined ? tax : item.taxRate,
+        };
+      });
+    }
+    
+    // Handle GST field mapping
+    if (rest.companyGst !== undefined && !rest.gstNumber) {
+      rest.gstNumber = rest.companyGst;
+    }
+    
     return rest;
   };
 
@@ -1006,6 +1025,25 @@ export async function pullFromCloud(opts = {}) {
       if (!doc) return doc;
       const { _id, __v, userId: _uid, ...rest } = doc;
       void _uid;
+      
+      // Handle field name mapping for invoice items
+      if (rest.items && Array.isArray(rest.items)) {
+        rest.items = rest.items.map(item => {
+          const { unitPrice, taxRate, ...itemRest } = item;
+          // Map server field names to client field names
+          return {
+            ...itemRest,
+            price: unitPrice !== undefined ? unitPrice : item.price,
+            tax: taxRate !== undefined ? taxRate : item.tax,
+          };
+        });
+      }
+      
+      // Handle GST field mapping
+      if (rest.gstNumber !== undefined && !rest.companyGst) {
+        rest.companyGst = rest.gstNumber;
+      }
+      
       return { ...rest, id: _id };
     };
 
@@ -1175,30 +1213,67 @@ export async function mergeLocalAndCloud() {
       if (Array.isArray(doc)) return doc.map(strip);
       const { _id, __v, userId: _muid, id: _mid, ...rest } = doc;
       void _muid; void _mid;
+      
+      // Handle field name mapping for invoice items (client -> server)
+      if (rest.items && Array.isArray(rest.items)) {
+        rest.items = rest.items.map(item => {
+          const { price, tax, ...itemRest } = item;
+          // Map client field names to server field names
+          return {
+            ...itemRest,
+            unitPrice: price !== undefined ? price : item.unitPrice,
+            taxRate: tax !== undefined ? tax : item.taxRate,
+          };
+        });
+      }
+      
+      // Handle GST field mapping
+      if (rest.companyGst !== undefined && !rest.gstNumber) {
+        rest.gstNumber = rest.companyGst;
+      }
+      
       return rest;
     };
 
     const mergeByKey = (local, remote, keyFn) => {
       const map = new Map();
+      
+      // First, add all remote items
       for (const item of remote || []) {
         map.set(keyFn(item), { ...item, _merged: true });
       }
+      
+      // Then merge local items with proper conflict resolution
       for (const item of local || []) {
         const key = keyFn(item);
         const existing = map.get(key);
+        
         if (!existing) {
+          // Local-only item: preserve it
           map.set(key, { ...item, _local: true });
+          _log('info', 'MERGE-LOCAL-ONLY', `key=${String(key).slice(0, 48)}: local item preserved (not in cloud).`);
         } else {
+          // Conflict: use timestamp-based resolution
           const localTs = new Date(item.updatedAt || item.createdAt || 0).getTime();
           const remoteTs = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+          
           if (localTs > remoteTs) {
-            map.set(key, { ...existing, ...item });
+            // Local is newer: merge local into remote, preserving all local fields
+            const merged = { ...existing, ...item };
+            map.set(key, merged);
             _log('info', 'MERGE-WIN', `key=${String(key).slice(0, 48)}: local (ts=${localTs}) overwrote cloud (ts=${remoteTs}).`);
-          } else {
+          } else if (remoteTs > localTs) {
+            // Remote is newer: keep remote, but warn
             _log('info', 'MERGE-WIN', `key=${String(key).slice(0, 48)}: cloud (ts=${remoteTs}) kept over local (ts=${localTs}).`);
+          } else {
+            // Same timestamp: prefer local to avoid data loss
+            const merged = { ...existing, ...item };
+            map.set(key, merged);
+            _log('info', 'MERGE-SAME-TS', `key=${String(key).slice(0, 48)}: same timestamp, local preferred to prevent data loss.`);
           }
         }
       }
+      
       return Array.from(map.values());
     };
 

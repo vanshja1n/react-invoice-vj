@@ -332,7 +332,7 @@ export default function InvoiceHistoryPage() {
                             </td>
                             <td className="px-4 py-3 text-right">
                               <span className="text-sm font-semibold">
-                                {formatCurrency(inv.total, inv.currency)}
+                                {formatCurrency(inv.total || inv.amount, inv.currency)}
                               </span>
                             </td>
                             <td className="px-4 py-3">

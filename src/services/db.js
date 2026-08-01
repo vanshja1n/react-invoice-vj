@@ -15,6 +15,44 @@ export function normalizeId(id) {
   return str;
 }
 
+// Enhanced ID lookup with fallback strategies
+export async function getInvoiceWithFallback(id, opts = {}) {
+  const normalizedId = normalizeId(id);
+  
+  // Try direct lookup first
+  try {
+    const direct = await db.invoices.get(normalizedId);
+    if (direct) return direct;
+  } catch (e) {
+    console.warn('[ID-LOOKUP] Direct lookup failed for id:', id, e);
+  }
+  
+  // Fallback: Try finding by invoiceNumber if string
+  if (typeof id === 'string' && !OBJECT_ID_REGEX.test(id)) {
+    try {
+      const byNumber = await db.invoices.where('invoiceNumber').equals(id).first();
+      if (byNumber) return byNumber;
+    } catch (e) {
+      console.warn('[ID-LOOKUP] InvoiceNumber lookup failed for id:', id, e);
+    }
+  }
+  
+  // Fallback: Try all IDs and find match
+  try {
+    const all = await db.invoices.toArray();
+    const match = all.find(inv => 
+      String(inv.id) === String(id) || 
+      String(inv.id) === String(normalizedId) ||
+      inv.invoiceNumber === String(id)
+    );
+    if (match) return match;
+  } catch (e) {
+    console.warn('[ID-LOOKUP] Fallback scan failed for id:', id, e);
+  }
+  
+  return undefined;
+}
+
 function _isAuthed() {
   return !!localStorage.getItem('invoicehub_token');
 }
@@ -125,6 +163,18 @@ export async function getInvoice(id, opts = {}) {
     }
     if (i < retries - 1) await sleep(backoffMs * (i + 1));
   }
+  
+  // Fallback: Try enhanced lookup if direct lookup fails
+  try {
+    const fallback = await getInvoiceWithFallback(id, opts);
+    if (fallback) {
+      _logLookup('invoice:fallback-success', { trace, reqId, rawId: String(id).slice(0, 40), foundId: JSON.stringify(fallback.id), invoiceNumber: fallback.invoiceNumber });
+      return fallback;
+    }
+  } catch (fallbackErr) {
+    _logLookup('invoice:fallback-failed', { trace, reqId, rawId: String(id).slice(0, 40), err: fallbackErr?.message || String(fallbackErr) });
+  }
+  
   try {
     const allIds = (await db.invoices.orderBy('id').keys()).slice(0, 50);
     const sample = (await db.invoices.limit(5).toArray()).map(r => ({ id: JSON.stringify(r.id), idType: typeof r.id, invoiceNumber: r.invoiceNumber }));
@@ -199,7 +249,8 @@ export async function getInvoiceStats() {
   };
 
   all.forEach((inv) => {
-    const amount = parseFloat(inv.total || 0);
+    // Use total field, fallback to amount for backward compatibility
+    const amount = parseFloat(inv.total || inv.amount || 0);
 
     // Process counts for all statuses first (for the chart)
     if (inv.status === 'cancelled') {
