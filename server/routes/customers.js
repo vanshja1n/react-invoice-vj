@@ -52,20 +52,51 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+const BACKEND_CREATE_LOG = true;
+function _logCreate(payload) {
+  if (!BACKEND_CREATE_LOG) return;
+  try { console.info('[BACKEND-CREATE]', payload); } catch { void 0; }
+}
+function _reqId(req, fallbackPrefix = 'cust') {
+  const h = req?.headers?.['x-request-id'];
+  if (h && String(h).trim()) return String(h).trim();
+  return `${fallbackPrefix}_srv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 router.post('/', async (req, res) => {
+  const requestId = _reqId(req, 'cust');
+  const endpoint = 'POST /api/customers';
   try {
     const validated = createCustomerSchema.parse(req.body);
     const now = new Date().toISOString();
+    const userId = req.user.id;
+
+    const same = (a, b) => {
+      const sa = String(a || '').trim().toLowerCase();
+      const sb = String(b || '').trim().toLowerCase();
+      return !!sa && sa === sb;
+    };
+    const orClauses = [];
+    if (validated.email) orClauses.push({ email: validated.email });
+    if (validated.name) orClauses.push({ name: { $regex: new RegExp(`^${String(validated.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } });
+    if (orClauses.length) {
+      const hit = await Customer.findOne({ userId, $or: orClauses }).lean();
+      if (hit && (same(hit.email, validated.email) || same(hit.name, validated.name))) {
+        _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(hit._id ?? ''), name: hit.name, email: hit.email, deduped: true });
+        return res.status(200).json(hit);
+      }
+    }
 
     const customer = new Customer({
       ...validated,
-      userId: req.user.id,
+      userId,
       createdAt: validated.createdAt || now,
       updatedAt: now,
     });
     await customer.save();
-
-    res.status(201).json(customer.toObject());
+    const saved = customer.toObject();
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(saved._id ?? ''), name: saved.name, email: saved.email, deduped: false });
+    res.status(201).json(saved);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.errors[0].message });
@@ -79,13 +110,16 @@ router.post('/', async (req, res) => {
 });
 
 router.post('/batch', async (req, res) => {
+  const requestId = _reqId(req, 'cust_batch');
+  const endpoint = 'POST /api/customers/batch';
   try {
     const items = Array.isArray(req.body) ? req.body : [];
     const now = new Date().toISOString();
+    const userId = req.user.id;
 
     const docs = items.map((item) => ({
       ...item,
-      userId: req.user.id,
+      userId,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || now,
     }));
@@ -94,6 +128,7 @@ router.post('/batch', async (req, res) => {
       await Customer.insertMany(docs, { ordered: false });
     }
 
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: null, created: docs.length, batch: true });
     res.status(201).json({ created: docs.length });
   } catch (err) {
     console.error('Batch create customers error:', err);

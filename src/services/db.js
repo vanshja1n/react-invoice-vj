@@ -584,14 +584,87 @@ export async function clearAllCustomers() {
 }
 
 export async function clearAllData() {
+  const { saveSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
+  const { clearSyncQueue, saveQueue, getQueue, queueOperation } = await import('@/services/sync');
+
+  const authed = _isAuthed();
+  const online = typeof navigator === 'undefined' ? true : !!navigator.onLine;
+
+  let keptClearOpsQueued = false;
+  if (authed) {
+    try {
+      const apiMod = await import('@/services/api');
+      const api = apiMod.default || apiMod.api;
+      if (online && api && api.invoices && typeof api.invoices.clear === 'function') {
+        try {
+          await Promise.allSettled([
+            Promise.resolve().then(() => api.invoices.clear()),
+            Promise.resolve().then(() => api.products.clear()),
+            Promise.resolve().then(() => api.customers.clear()),
+            Promise.resolve().then(() => api.inventory.clear()),
+          ]);
+        } catch (_apiErr) { void _apiErr; }
+      } else {
+        try { saveQueue([]); } catch { void 0; }
+        try { queueOperation('invoices', 'clear', null); } catch { void 0; }
+        try { queueOperation('products', 'clear', null); } catch { void 0; }
+        try { queueOperation('customers', 'clear', null); } catch { void 0; }
+        try { queueOperation('inventory', 'clear', null); } catch { void 0; }
+        keptClearOpsQueued = true;
+      }
+    } catch (_cloudErr) { void _cloudErr; }
+  }
+
   await db.invoices.clear();
   await db.products.clear();
   await db.customers.clear();
   await db.inventoryHistory.clear();
-  await _queue('invoices', 'clear', null);
-  await _queue('products', 'clear', null);
-  await _queue('customers', 'clear', null);
-  await _queue('inventory', 'clear', null);
+
+  try { saveSettings({ ...DEFAULT_SETTINGS }); } catch { void 0; }
+
+  const settingsLsKey = 'invoicehub_settings';
+  const syncStrategyLsKey = 'invoicehub_sync_strategy';
+  const tokenLsKey = 'invoicehub_token';
+  const userLsKey = 'invoicehub_user';
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(settingsLsKey);
+      localStorage.removeItem(syncStrategyLsKey);
+      localStorage.removeItem(tokenLsKey);
+      localStorage.removeItem(userLsKey);
+    }
+  } catch { void 0; }
+
+  if (!keptClearOpsQueued) {
+    try { clearSyncQueue(); } catch { void 0; }
+
+    try {
+      if (typeof Dexie !== 'undefined' && db?.syncQueue) {
+        try { await db.syncQueue.clear(); } catch { void 0; }
+      }
+    } catch { void 0; }
+
+    try {
+      const current = getQueue();
+      if (Array.isArray(current) && current.length > 0) {
+        saveQueue([]);
+      }
+    } catch { void 0; }
+  }
+
+  try {
+    const { setSyncChoiceLock } = await import('@/services/sync');
+    try { setSyncChoiceLock(false); } catch { void 0; }
+  } catch { void 0; }
+
+  try {
+    if (typeof window !== 'undefined') {
+      try { window.dispatchEvent(new CustomEvent('data-refreshed')); } catch { void 0; }
+      try { window.dispatchEvent(new CustomEvent('inventory-updated')); } catch { void 0; }
+      try { window.dispatchEvent(new CustomEvent('auth-logged-out')); } catch { void 0; }
+    }
+  } catch { void 0; }
 }
 
 // ─── Inventory History ───────────────────────────────────────

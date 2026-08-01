@@ -27,9 +27,37 @@ function getToken() {
   return localStorage.getItem('invoicehub_token');
 }
 
+const LOG_CREATE_DEBUG = true;
+function _logCreate(tag, payload) {
+  if (!LOG_CREATE_DEBUG) return;
+  try { console.info('[CREATE-DUPE-DEBUG]', tag, payload); } catch { void 0; }
+}
+
+function _genRequestId(prefix = 'req') {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function _isCreatePath(path) {
+  if (!path) return false;
+  const p = String(path).split('?')[0];
+  if (/^https?:\/\//i.test(p)) {
+    try {
+      const u = new URL(p);
+      return _isCreatePath(u.pathname.replace(/^\/api/, '') || u.pathname);
+    } catch { /* fallthrough */ }
+  }
+  const norm = p.replace(/\/+$/, '');
+  if (norm.endsWith('/batch')) return true;
+  const leaf = norm.split('/').filter(Boolean).pop() || '';
+  return leaf !== '' && !/^[0-9a-fA-F]{24}$/.test(leaf);
+}
+
 async function request(path, { method = 'GET', body, headers = {}, requiresAuth = true } = {}) {
+  const isCreate = method === 'POST' && _isCreatePath(path);
+  const requestId = headers['X-Request-Id'] || _genRequestId('api');
   const defaultHeaders = {
     'Content-Type': 'application/json',
+    'X-Request-Id': requestId,
     ...headers,
   };
 
@@ -49,8 +77,13 @@ async function request(path, { method = 'GET', body, headers = {}, requiresAuth 
     options.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
 
+  const endpoint = /^https?:\/\//i.test(path) ? path : `${API_BASE}${path}`;
+  const tsStart = new Date().toISOString();
+  if (isCreate) {
+    _logCreate('http:create:start', { timestamp: tsStart, endpoint, method, requestId, path });
+  }
+
   try {
-    const endpoint = /^https?:\/\//i.test(path) ? path : `${API_BASE}${path}`;
     const response = await fetch(endpoint, options);
 
     if (response.status === 401) {
@@ -73,7 +106,15 @@ async function request(path, { method = 'GET', body, headers = {}, requiresAuth 
       const errorMessage = data?.error || `HTTP ${response.status}`;
       const error = new Error(errorMessage);
       error.status = response.status;
+      if (isCreate) {
+        _logCreate('http:create:error', { timestamp: new Date().toISOString(), endpoint, requestId, status: response.status, error: errorMessage });
+      }
       throw error;
+    }
+
+    if (isCreate) {
+      const entityId = data?._id || data?.id || (Array.isArray(data) ? null : null);
+      _logCreate('http:create:done', { timestamp: new Date().toISOString(), endpoint, requestId, status: response.status, entityId: String(entityId ?? ''), responseCreated: data?.created ?? undefined });
     }
 
     return data;
@@ -81,6 +122,9 @@ async function request(path, { method = 'GET', body, headers = {}, requiresAuth 
     if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
       const offlineError = new Error('OFFLINE');
       offlineError.status = 0;
+      if (isCreate) {
+        _logCreate('http:create:offline', { timestamp: new Date().toISOString(), endpoint, requestId });
+      }
       throw offlineError;
     }
     throw err;

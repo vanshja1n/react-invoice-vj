@@ -58,20 +58,52 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+const BACKEND_CREATE_LOG = true;
+function _logCreate(payload) {
+  if (!BACKEND_CREATE_LOG) return;
+  try { console.info('[BACKEND-CREATE]', payload); } catch { void 0; }
+}
+function _reqId(req, fallbackPrefix = 'prod') {
+  const h = req?.headers?.['x-request-id'];
+  if (h && String(h).trim()) return String(h).trim();
+  return `${fallbackPrefix}_srv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 router.post('/', async (req, res) => {
+  const requestId = _reqId(req, 'prod');
+  const endpoint = 'POST /api/products';
   try {
     const validated = createProductSchema.parse(req.body);
     const now = new Date().toISOString();
+    const userId = req.user.id;
+
+    const same = (a, b) => {
+      const sa = String(a || '').trim().toLowerCase();
+      const sb = String(b || '').trim().toLowerCase();
+      return !!sa && sa === sb;
+    };
+    const hit = await Product.findOne({
+      userId,
+      $or: [
+        ...(validated.sku ? [{ sku: validated.sku }] : []),
+        ...(validated.name ? [{ name: { $regex: new RegExp(`^${String(validated.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }] : []),
+      ],
+    }).lean();
+    if (hit && (same(hit.sku, validated.sku) || same(hit.name, validated.name))) {
+      _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(hit._id ?? ''), name: hit.name, sku: hit.sku, deduped: true });
+      return res.status(200).json(hit);
+    }
 
     const product = new Product({
       ...validated,
-      userId: req.user.id,
+      userId,
       createdAt: validated.createdAt || now,
       updatedAt: now,
     });
     await product.save();
-
-    res.status(201).json(product.toObject());
+    const saved = product.toObject();
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(saved._id ?? ''), name: saved.name, sku: saved.sku, deduped: false });
+    res.status(201).json(saved);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.errors[0].message });
@@ -82,13 +114,16 @@ router.post('/', async (req, res) => {
 });
 
 router.post('/batch', async (req, res) => {
+  const requestId = _reqId(req, 'prod_batch');
+  const endpoint = 'POST /api/products/batch';
   try {
     const items = Array.isArray(req.body) ? req.body : [];
     const now = new Date().toISOString();
+    const userId = req.user.id;
 
     const docs = items.map((item) => ({
       ...item,
-      userId: req.user.id,
+      userId,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || now,
     }));
@@ -97,6 +132,7 @@ router.post('/batch', async (req, res) => {
       await Product.insertMany(docs, { ordered: false });
     }
 
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: null, created: docs.length, batch: true });
     res.status(201).json({ created: docs.length });
   } catch (err) {
     console.error('Batch create products error:', err);

@@ -70,20 +70,43 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+const BACKEND_CREATE_LOG = true;
+function _logCreate(payload) {
+  if (!BACKEND_CREATE_LOG) return;
+  try { console.info('[BACKEND-CREATE]', payload); } catch { void 0; }
+}
+function _reqId(req, fallbackPrefix = 'inv') {
+  const h = req?.headers?.['x-request-id'];
+  if (h && String(h).trim()) return String(h).trim();
+  return `${fallbackPrefix}_srv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 router.post('/', async (req, res) => {
+  const requestId = _reqId(req, 'inv');
+  const endpoint = 'POST /api/invoices';
   try {
     const validated = createInvoiceSchema.parse(req.body);
     const now = new Date().toISOString();
+    const userId = req.user.id;
+
+    if (validated.invoiceNumber && String(validated.invoiceNumber).trim()) {
+      const hit = await Invoice.findOne({ userId, invoiceNumber: validated.invoiceNumber }).lean();
+      if (hit) {
+        _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(hit._id ?? ''), invoiceNumber: hit.invoiceNumber, deduped: true });
+        return res.status(200).json(hit);
+      }
+    }
 
     const invoice = new Invoice({
       ...validated,
-      userId: req.user.id,
+      userId,
       createdAt: validated.createdAt || now,
       updatedAt: now,
     });
     await invoice.save();
-
-    res.status(201).json(invoice.toObject());
+    const saved = invoice.toObject();
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: String(saved._id ?? ''), invoiceNumber: saved.invoiceNumber, deduped: false });
+    res.status(201).json(saved);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.errors[0].message });
@@ -94,13 +117,16 @@ router.post('/', async (req, res) => {
 });
 
 router.post('/batch', async (req, res) => {
+  const requestId = _reqId(req, 'inv_batch');
+  const endpoint = 'POST /api/invoices/batch';
   try {
     const items = Array.isArray(req.body) ? req.body : [];
     const now = new Date().toISOString();
+    const userId = req.user.id;
 
     const docs = items.map((item) => ({
       ...item,
-      userId: req.user.id,
+      userId,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || now,
     }));
@@ -109,6 +135,7 @@ router.post('/batch', async (req, res) => {
       await Invoice.insertMany(docs, { ordered: false });
     }
 
+    _logCreate({ timestamp: new Date().toISOString(), endpoint, requestId, entityId: null, created: docs.length, batch: true });
     res.status(201).json({ created: docs.length });
   } catch (err) {
     console.error('Batch create invoices error:', err);

@@ -180,6 +180,16 @@ export function getQueue() {
   }
 }
 
+export function clearSyncQueue() {
+  try {
+    localStorage.removeItem(QUEUE_KEY);
+  } catch { void 0; }
+  _lastQueueSerialized = '';
+  try {
+    window.dispatchEvent(new CustomEvent('queue-changed'));
+  } catch { void 0; }
+}
+
 function saveQueue(queue) {
   const serialized = JSON.stringify(queue);
   if (serialized === _lastQueueSerialized) {
@@ -238,6 +248,46 @@ async function runOp(entity, operation, data) {
     }
   };
 
+  const findRemoteIdForLocal = async (entityName, localDoc) => {
+    if (!localDoc) return null;
+    try {
+      const remoteCandidates = await (async () => {
+        const listFns = {
+          invoices: api.invoices.getAll,
+          products: api.products.getAll,
+          customers: api.customers.getAll,
+        };
+        const fn = listFns[entityName];
+        if (typeof fn !== 'function') return [];
+        return (await fn()) || [];
+      })();
+      if (!remoteCandidates.length) return null;
+      const same = (a, b) => {
+        const sa = String(a || '').trim().toLowerCase();
+        const sb = String(b || '').trim().toLowerCase();
+        return !!sa && sa === sb;
+      };
+      switch (entityName) {
+        case 'invoices': {
+          const hit = remoteCandidates.find((r) => same(r.invoiceNumber, localDoc.invoiceNumber) || same(r._id, localDoc.id));
+          return hit?._id || null;
+        }
+        case 'products': {
+          const hit = remoteCandidates.find((r) => same(r.sku, localDoc.sku) || same(r.name, localDoc.name) || same(r._id, localDoc.id));
+          return hit?._id || null;
+        }
+        case 'customers': {
+          const hit = remoteCandidates.find((r) => same(r.email, localDoc.email) || same(r.name, localDoc.name) || same(r._id, localDoc.id));
+          return hit?._id || null;
+        }
+        default:
+          return null;
+      }
+    } catch {
+      return null;
+    }
+  };
+
   switch (`${entity}:${operation}`) {
     case 'invoices:create': {
       const d = strip(data);
@@ -258,6 +308,18 @@ async function runOp(entity, operation, data) {
     case 'invoices:delete': {
       if (isRemoteId(data)) {
         await api.invoices.delete(data);
+      } else {
+        const full = await getFullLocalDoc('invoices', data);
+        if (full && full.id && isRemoteId(full.id)) {
+          await api.invoices.delete(full.id);
+        } else if (full && full._id && isRemoteId(full._id)) {
+          await api.invoices.delete(full._id);
+        } else {
+          const remoteMatch = await findRemoteIdForLocal('invoices', full);
+          if (remoteMatch) {
+            await api.invoices.delete(remoteMatch);
+          }
+        }
       }
       return;
     }
@@ -279,6 +341,18 @@ async function runOp(entity, operation, data) {
     case 'products:delete': {
       if (isRemoteId(data)) {
         await api.products.delete(data);
+      } else {
+        const full = await getFullLocalDoc('products', data);
+        if (full && full.id && isRemoteId(full.id)) {
+          await api.products.delete(full.id);
+        } else if (full && full._id && isRemoteId(full._id)) {
+          await api.products.delete(full._id);
+        } else {
+          const remoteMatch = await findRemoteIdForLocal('products', full);
+          if (remoteMatch) {
+            await api.products.delete(remoteMatch);
+          }
+        }
       }
       return;
     }
@@ -300,6 +374,18 @@ async function runOp(entity, operation, data) {
     case 'customers:delete': {
       if (isRemoteId(data)) {
         await api.customers.delete(data);
+      } else {
+        const full = await getFullLocalDoc('customers', data);
+        if (full && full.id && isRemoteId(full.id)) {
+          await api.customers.delete(full.id);
+        } else if (full && full._id && isRemoteId(full._id)) {
+          await api.customers.delete(full._id);
+        } else {
+          const remoteMatch = await findRemoteIdForLocal('customers', full);
+          if (remoteMatch) {
+            await api.customers.delete(remoteMatch);
+          }
+        }
       }
       return;
     }
@@ -307,6 +393,20 @@ async function runOp(entity, operation, data) {
     case 'products:clear':
     case 'customers:clear':
     case 'inventory:clear': {
+      try {
+        const clearMap = {
+          'invoices:clear': api.invoices?.clear,
+          'products:clear': api.products?.clear,
+          'customers:clear': api.customers?.clear,
+          'inventory:clear': api.inventory?.clear,
+        };
+        const fn = clearMap[`${entity}:${operation}`];
+        if (typeof fn === 'function') {
+          await fn();
+        }
+      } catch (clearErr) {
+        console.warn(`${LOG_TAG} Clear op for ${entity}:${operation} failed — backend may not expose dedicated clear endpoint.`, clearErr?.message || clearErr);
+      }
       return;
     }
     case 'inventory:create': {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
@@ -47,6 +47,7 @@ export default function InvoiceEditorPage() {
   const [saving, setSaving] = useState(false);
   const [customItemsDialogOpen, setCustomItemsDialogOpen] = useState(false);
   const [pendingCustomItems, setPendingCustomItems] = useState([]);
+  const _saveInFlightRef = useRef(false);
 
   useEffect(() => {
     const init = async () => {
@@ -132,13 +133,16 @@ export default function InvoiceEditorPage() {
     });
   };
 
-  const handleSave = async () => {
-    if (!invoice) return;
+  const handleSave = useCallback(async () => {
+    if (!invoice) return undefined;
+    if (_saveInFlightRef.current) return undefined;
+    _saveInFlightRef.current = true;
 
     const validation = validateInvoiceItems(invoice);
     if (!validation.valid) {
+      _saveInFlightRef.current = false;
       toast.error(validation.message);
-      return;
+      return undefined;
     }
 
     setSaving(true);
@@ -153,33 +157,53 @@ export default function InvoiceEditorPage() {
       } else {
         savedInvoice = await add(dataToSave);
         toast.success('Invoice saved successfully');
-        navigate(`/invoices/${savedInvoice.id}/edit`, { replace: true });
+        if (savedInvoice?.id != null) {
+          const next = `/invoices/${savedInvoice.id}/edit`;
+          setTimeout(() => navigate(next, { replace: true }), 0);
+        }
       }
 
       // Find custom items
       const customItems = dataToSave.items.filter(item =>
         !item.productId && item.name.trim());
       if (customItems.length > 0) {
-        // Check if any of these names already exist in products
         const existingProductNames = new Set(products.map(p => p.name.toLowerCase()));
         const newCustomItems = customItems.map(item => ({
           ...item,
           currency: dataToSave.currency,
         })).filter(item =>
           !existingProductNames.has(item.name.toLowerCase()));
-        
+
         if (newCustomItems.length > 0) {
           setPendingCustomItems(newCustomItems);
           setCustomItemsDialogOpen(true);
         }
       }
+      return savedInvoice;
     } catch (e) {
       console.error('Failed to save:', e);
       toast.error('Failed to save invoice');
+      return undefined;
     } finally {
       setSaving(false);
+      _saveInFlightRef.current = false;
     }
-  };
+  }, [invoice, isEditing, id, update, add, products]);
+
+  const handlePreview = useCallback(async () => {
+    const validation = validateInvoiceItems(invoice);
+    if (!validation.valid) {
+      toast.error(validation.message);
+      return;
+    }
+    const savedInvoice = await handleSave();
+    const targetId = savedInvoice?.id ?? (isEditing ? id : undefined);
+    if (targetId) {
+      navigate(`/invoices/${targetId}/preview`);
+    } else if (isEditing && id) {
+      navigate(`/invoices/${id}/preview`);
+    }
+  }, [invoice, handleSave, isEditing, id, navigate]);
 
   if (loading) {
     return (
@@ -257,22 +281,18 @@ export default function InvoiceEditorPage() {
             variant="outline"
             size="sm"
             className="gap-1.5 h-8 text-xs"
-            onClick={() => {
-              handleSave().then(() => {
-                if (isEditing) {
-                  navigate(`/invoices/${id}/preview`);
-                }
-              });
-            }}
+            onClick={handlePreview}
+            disabled={saving || loading}
           >
-            <Eye className="h-3.5 w-3.5" /> Preview
+            <Eye className="h-3.5 w-3.5" />
+            {saving ? 'Saving…' : 'Preview'}
           </Button>
 
           <Button
             size="sm"
             className="gap-1.5 h-8 text-xs"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || loading}
           >
             <Save className="h-3.5 w-3.5" />
             {saving ? 'Saving...' : 'Save'}
