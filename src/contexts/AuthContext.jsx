@@ -17,9 +17,20 @@ import {
   isSyncChoiceUnresolved,
   dispatchDataRefreshed,
   getSyncDecision,
+  startSyncEngine,
+  stopSyncEngine,
+  isSyncEngineRunning,
+  debouncedProcessQueueFromQueueChanged,
 } from '@/services/sync';
 
 const AuthContext = createContext(null);
+
+function _logAuth(tag, ...args) {
+  try {
+    const ts = new Date().toISOString();
+    console.info(`[InvoiceHub Auth] ${ts} [${tag}]`, ...args);
+  } catch { void 0; }
+}
 
 const TOKEN_KEY = 'invoicehub_token';
 const USER_KEY = 'invoicehub_user';
@@ -175,7 +186,6 @@ export function AuthProvider({ children }) {
       try {
         const locked = isSyncChoiceLocked() || await isSyncChoiceUnresolved();
         if (locked) {
-          // If locked but no strategy, re-run evaluation since online status changed.
           if (!getSyncStrategy()) {
             await evaluateSyncDecision();
           }
@@ -185,6 +195,9 @@ export function AuthProvider({ children }) {
         const count = await processQueue();
         if (typeof count === 'number') setPendingCount(count);
         await restoreCloudIfEmpty();
+        if (!isSyncEngineRunning()) {
+          startSyncEngine(10000);
+        }
       } catch { void 0; }
     };
     const handleOffline = () => setIsOnline(false);
@@ -199,52 +212,27 @@ export function AuthProvider({ children }) {
   }, [token, restoreCloudIfEmpty, evaluateSyncDecision]);
 
   useEffect(() => {
-    if (!token) return;
-    let interval = setInterval(() => {
-      (async () => {
-        try {
-          const locked = isSyncChoiceLocked() || await isSyncChoiceUnresolved();
-          if (locked) {
-            if (!getSyncStrategy() && (typeof navigator === 'undefined' || navigator.onLine)) {
-              // Still need to decide: retry evaluate each interval (handles transient network errors on first call)
-              await evaluateSyncDecision();
-            }
-            setPendingCount(getQueue().length);
-            return;
-          }
-          if (!navigator.onLine) {
-            const q = getQueue ? getQueue().length : null;
-            if (typeof q === 'number') setPendingCount(q);
-            return;
-          }
-          const pending = await processQueue();
-          let pulled = false;
-          try {
-            await pullFromCloud();
-            pulled = true;
-          } catch (_err) {
-            if (_err && _err.message === 'SYNC_LOCKED') {
-              pulled = false;
-            } else {
-              pulled = false;
-            }
-            void _err;
-          }
-          setPendingCount(pending);
-          if (pending > 0 || pulled) {
-            dispatchDataRefreshed();
-          }
-        } catch (_err) {
-          void _err;
-        }
-      })();
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [token, evaluateSyncDecision]);
+    if (!token) {
+      stopSyncEngine();
+      return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setPendingCount(getQueue().length);
+      return;
+    }
+    const started = startSyncEngine(10000);
+    if (started) {
+      _logAuth('SINGLETON-ENGINE', 'Started singleton sync engine (interval=10s) for new auth session.');
+    }
+    return () => {
+      stopSyncEngine();
+    };
+  }, [token]);
 
   useEffect(() => {
     const handler = () => {
-      processQueue().then(setPendingCount).catch(() => setPendingCount(getQueue().length));
+      setPendingCount(getQueue().length);
+      debouncedProcessQueueFromQueueChanged(750);
     };
     window.addEventListener('queue-changed', handler);
     return () => window.removeEventListener('queue-changed', handler);

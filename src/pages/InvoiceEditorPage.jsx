@@ -29,7 +29,7 @@ import {
 import {
   createDefaultProduct,
 } from '@/types/product';
-import { getInvoice, getLastInvoiceNumber, getAllProducts, normalizeId } from '@/services/db';
+import { getInvoice, getLastInvoiceNumber, normalizeId } from '@/services/db';
 import { getSettings } from '@/services/settings';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useProducts } from '@/hooks/useProducts';
@@ -54,10 +54,13 @@ export default function InvoiceEditorPage() {
       setLoading(true);
       try {
         if (isEditing) {
-          const existing = await getInvoice(id);
+          console.info('[InvoiceEditorPage] TRACE load start', { routeId: id, routeIdType: typeof id, routeIdLength: String(id).length });
+          const existing = await getInvoice(id, { trace: 'InvoiceEditorPage', retries: 4, backoffMs: 100 });
           if (existing) {
+            console.info('[InvoiceEditorPage] TRACE load OK', { routeId: id, resolvedId: existing.id, resolvedIdType: typeof existing.id, invoiceNumber: existing.invoiceNumber });
             setInvoice(existing);
           } else {
+            console.error('[InvoiceEditorPage] TRACE load FAILED', { routeId: id });
             toast.error('Invoice not found');
             navigate('/invoices');
             return;
@@ -71,7 +74,7 @@ export default function InvoiceEditorPage() {
           setInvoice(defaultInvoice);
         }
       } catch (e) {
-        console.error('Failed to load invoice:', e);
+        console.error('[InvoiceEditorPage] Failed to load invoice:', e?.message || String(e));
         toast.error('Failed to load invoice');
       } finally {
         setLoading(false);

@@ -21,14 +21,18 @@ export default function InvoicePreviewPage() {
     const load = async () => {
       setLoading(true);
       try {
-        const inv = await getInvoice(id);
+        console.info('[InvoicePreviewPage] TRACE load start', { routeId: id, routeIdType: typeof id, routeIdLength: String(id).length });
+        const inv = await getInvoice(id, { trace: 'InvoicePreviewPage', retries: 4, backoffMs: 100 });
         if (inv) {
+          console.info('[InvoicePreviewPage] TRACE load OK', { routeId: id, resolvedId: inv.id, resolvedIdType: typeof inv.id, invoiceNumber: inv.invoiceNumber });
           setInvoice(inv);
         } else {
+          console.error('[InvoicePreviewPage] TRACE load FAILED', { routeId: id });
           toast.error('Invoice not found');
           navigate('/invoices');
         }
-      } catch {
+      } catch (e) {
+        console.error('[InvoicePreviewPage] TRACE load EXCEPTION', { routeId: id, err: e?.message || String(e) });
         toast.error('Failed to load invoice');
         navigate('/invoices');
       } finally {

@@ -25,6 +25,13 @@ async function _queue(entity, operation, data) {
     queueOperation(entity, operation, data);
   } catch (_err) { void _err; /* noop */ }
 }
+async function _scrubQueueBeforeDelete(entity, targetId) {
+  if (!_isAuthed()) return 0;
+  try {
+    const { scrubQueueForTarget } = await import('@/services/sync');
+    return scrubQueueForTarget(entity, targetId);
+  } catch (_err) { void _err; return 0; }
+}
 
 // Create database
 const db = new Dexie('InvoiceHubDB');
@@ -82,12 +89,48 @@ export async function updateInvoice(id, invoiceData) {
 
 export async function deleteInvoice(id) {
   const nid = normalizeId(id);
+  await _scrubQueueBeforeDelete('invoices', nid);
   await db.invoices.delete(nid);
   await _queue('invoices', 'delete', nid);
 }
 
-export async function getInvoice(id) {
-  return await db.invoices.get(normalizeId(id));
+function _logLookup(tag, payload) {
+  try { console.info('[LOOKUP-AUDIT]', tag, payload); } catch { void 0; }
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function getInvoice(id, opts = {}) {
+  const retries = typeof opts.retries === 'number' ? opts.retries : 3;
+  const backoffMs = typeof opts.backoffMs === 'number' ? opts.backoffMs : 80;
+  const trace = opts.trace ?? 'unknown';
+  const nid = normalizeId(id);
+  const reqId = `getInvoice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  let lastErr = null;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const t0 = Date.now();
+      const row = await db.invoices.get(nid);
+      const elapsed = Date.now() - t0;
+      if (row) {
+        _logLookup('invoice:found', { trace, reqId, try: i + 1, rawId: String(id).slice(0, 40), normalizedId: JSON.stringify(nid), normalizedType: typeof nid, rowId: JSON.stringify(row.id), rowIdType: typeof row.id, invoiceNumber: row.invoiceNumber, elapsedMs: elapsed });
+        return row;
+      }
+      _logLookup('invoice:miss', { trace, reqId, try: i + 1, rawId: String(id).slice(0, 40), normalizedId: JSON.stringify(nid), normalizedType: typeof nid, elapsedMs: elapsed });
+    } catch (err) {
+      lastErr = err;
+      _logLookup('invoice:err', { trace, reqId, try: i + 1, rawId: String(id).slice(0, 40), normalizedId: JSON.stringify(nid), err: err?.message || String(err) });
+    }
+    if (i < retries - 1) await sleep(backoffMs * (i + 1));
+  }
+  try {
+    const allIds = (await db.invoices.orderBy('id').keys()).slice(0, 50);
+    const sample = (await db.invoices.limit(5).toArray()).map(r => ({ id: JSON.stringify(r.id), idType: typeof r.id, invoiceNumber: r.invoiceNumber }));
+    _logLookup('invoice:notfound', { trace, reqId, rawId: String(id).slice(0, 40), normalizedId: JSON.stringify(nid), normalizedType: typeof nid, sampleIdsInStore: allIds.map(String), sample5: sample, lastErr: lastErr?.message || null });
+  } catch { void 0; }
+  return undefined;
 }
 
 export async function getAllInvoices() {
@@ -265,6 +308,7 @@ export async function updateProduct(id, productData) {
 
 export async function deleteProduct(id) {
   const nid = normalizeId(id);
+  await _scrubQueueBeforeDelete('products', nid);
   await db.products.delete(nid);
   await _queue('products', 'delete', nid);
 }
@@ -434,6 +478,7 @@ export async function updateCustomer(id, customerData) {
 
 export async function deleteCustomer(id) {
   const nid = normalizeId(id);
+  await _scrubQueueBeforeDelete('customers', nid);
   await db.customers.delete(nid);
   await _queue('customers', 'delete', nid);
 }
@@ -607,86 +652,127 @@ export async function clearAllCustomers() {
 
 export async function clearAllData() {
   const { saveSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
-  const { clearSyncQueue, saveQueue, getQueue, queueOperation } = await import('@/services/sync');
+  const syncMod = await import('@/services/sync');
+  const {
+    clearSyncQueue,
+    saveQueue,
+    queueOperation,
+    markClearPending,
+    clearClearPending,
+    setLastClearedAt,
+    setSyncChoiceLock,
+    stopSyncEngine,
+    suppressQueueEvents,
+  } = syncMod;
 
   const authed = _isAuthed();
   const online = typeof navigator === 'undefined' ? true : !!navigator.onLine;
+  const LOG_TAG = '[clearAllData]';
 
-  let keptClearOpsQueued = false;
-  if (authed) {
-    try {
+  try {
+    markClearPending();
+    try { stopSyncEngine(); } catch { void 0; }
+
+    if (authed && online) {
       const apiMod = await import('@/services/api');
       const api = apiMod.default || apiMod.api;
-      if (online && api && api.invoices && typeof api.invoices.clear === 'function') {
-        try {
-          await Promise.allSettled([
-            Promise.resolve().then(() => api.invoices.clear()),
-            Promise.resolve().then(() => api.products.clear()),
-            Promise.resolve().then(() => api.customers.clear()),
-            Promise.resolve().then(() => api.inventory.clear()),
-          ]);
-        } catch (_apiErr) { void _apiErr; }
-      } else {
-        try { saveQueue([]); } catch { void 0; }
-        try { queueOperation('invoices', 'clear', null); } catch { void 0; }
-        try { queueOperation('products', 'clear', null); } catch { void 0; }
-        try { queueOperation('customers', 'clear', null); } catch { void 0; }
-        try { queueOperation('inventory', 'clear', null); } catch { void 0; }
-        keptClearOpsQueued = true;
+
+      const cloudResults = await Promise.allSettled([
+        api.invoices?.clear?.() ?? Promise.reject(new Error('no invoices.clear')),
+        api.products?.clear?.() ?? Promise.reject(new Error('no products.clear')),
+        api.customers?.clear?.() ?? Promise.reject(new Error('no customers.clear')),
+        api.inventory?.clear?.() ?? Promise.reject(new Error('no inventory.clear')),
+      ]);
+
+      const failed = cloudResults.filter(r => r.status === 'rejected');
+      if (failed.length > 0) {
+        const reasons = failed.map(r => r.reason?.message || String(r.reason)).join('; ');
+        console.error(`${LOG_TAG} Cloud clear failed for ${failed.length}/4 endpoints: ${reasons}. Aborting clearAllData BEFORE touching local storage.`);
+        throw new Error(`Cloud clear failed: ${reasons}`);
       }
-    } catch (_cloudErr) { void _cloudErr; }
-  }
 
-  await db.invoices.clear();
-  await db.products.clear();
-  await db.customers.clear();
-  await db.inventoryHistory.clear();
-
-  try { saveSettings({ ...DEFAULT_SETTINGS }); } catch { void 0; }
-
-  const settingsLsKey = 'invoicehub_settings';
-  const syncStrategyLsKey = 'invoicehub_sync_strategy';
-  const tokenLsKey = 'invoicehub_token';
-  const userLsKey = 'invoicehub_user';
-
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(settingsLsKey);
-      localStorage.removeItem(syncStrategyLsKey);
-      localStorage.removeItem(tokenLsKey);
-      localStorage.removeItem(userLsKey);
-    }
-  } catch { void 0; }
-
-  if (!keptClearOpsQueued) {
-    try { clearSyncQueue(); } catch { void 0; }
-
-    try {
-      if (typeof Dexie !== 'undefined' && db?.syncQueue) {
-        try { await db.syncQueue.clear(); } catch { void 0; }
+      try {
+        const pullCheck = await api.sync?.pull?.().catch(() => null);
+        if (pullCheck) {
+          const invN = (pullCheck.invoices || []).length;
+          const prN = (pullCheck.products || []).length;
+          const cuN = (pullCheck.customers || []).length;
+          const ihN = (pullCheck.inventoryHistory || []).length;
+          if (invN + prN + cuN + ihN > 0) {
+            throw new Error(`Post-clear verification FAILED: cloud still has inv=${invN}, pr=${prN}, cu=${cuN}, ih=${ihN}. Clear aborted.`);
+          }
+          console.info(`${LOG_TAG} Post-clear cloud verification PASSED (all entities empty). Proceeding with local clear.`);
+        }
+      } catch (verifyErr) {
+        if (verifyErr?.message?.startsWith('Post-clear verification FAILED')) throw verifyErr;
+        console.warn(`${LOG_TAG} Post-clear verification skipped (offline or pull unavailable) — continuing with local clear.`);
       }
-    } catch { void 0; }
-
-    try {
-      const current = getQueue();
-      if (Array.isArray(current) && current.length > 0) {
+    } else if (authed && !online) {
+      suppressQueueEvents(() => {
         saveQueue([]);
+      });
+      queueOperation('invoices', 'clear', null);
+      queueOperation('products', 'clear', null);
+      queueOperation('customers', 'clear', null);
+      queueOperation('inventory', 'clear', null);
+      console.info(`${LOG_TAG} Offline but authenticated: queued 4 :clear operations for next online cycle.`);
+    }
+
+    try {
+      await db.transaction('rw', db.invoices, db.products, db.customers, db.inventoryHistory, async () => {
+        await db.invoices.clear();
+        await db.products.clear();
+        await db.customers.clear();
+        await db.inventoryHistory.clear();
+      });
+    } catch (txErr) {
+      console.error(`${LOG_TAG} Local IndexedDB clear transaction FAILED.`, txErr);
+      throw txErr;
+    }
+
+    try { saveSettings({ ...DEFAULT_SETTINGS }); } catch (setErr) {
+      console.warn(`${LOG_TAG} saveSettings failed during clear.`, setErr);
+    }
+
+    clearSyncQueue();
+    try {
+      suppressQueueEvents(() => {
+        saveQueue([], 'clearAllData complete - queue reset');
+      });
+    } catch { void 0; }
+
+    const settingsLsKey = 'invoicehub_settings';
+    const syncStrategyLsKey = 'invoicehub_sync_strategy';
+    const tokenLsKey = 'invoicehub_token';
+    const userLsKey = 'invoicehub_user';
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(settingsLsKey);
+        localStorage.removeItem(syncStrategyLsKey);
+        localStorage.removeItem(tokenLsKey);
+        localStorage.removeItem(userLsKey);
+      }
+    } catch (lsErr) {
+      console.warn(`${LOG_TAG} localStorage clear failed.`, lsErr);
+    }
+
+    try { setSyncChoiceLock(false); } catch { void 0; }
+
+    setLastClearedAt(Date.now());
+
+    try {
+      if (typeof window !== 'undefined') {
+        try { window.dispatchEvent(new CustomEvent('data-refreshed')); } catch { void 0; }
+        try { window.dispatchEvent(new CustomEvent('inventory-updated')); } catch { void 0; }
+        try { window.dispatchEvent(new CustomEvent('auth-logged-out')); } catch { void 0; }
       }
     } catch { void 0; }
+
+    console.info(`${LOG_TAG} COMPLETE — all layers wiped, cloud verified empty, queue reset, clear flag lowered.`);
+  } finally {
+    clearClearPending();
   }
-
-  try {
-    const { setSyncChoiceLock } = await import('@/services/sync');
-    try { setSyncChoiceLock(false); } catch { void 0; }
-  } catch { void 0; }
-
-  try {
-    if (typeof window !== 'undefined') {
-      try { window.dispatchEvent(new CustomEvent('data-refreshed')); } catch { void 0; }
-      try { window.dispatchEvent(new CustomEvent('inventory-updated')); } catch { void 0; }
-      try { window.dispatchEvent(new CustomEvent('auth-logged-out')); } catch { void 0; }
-    }
-  } catch { void 0; }
 }
 
 // ─── Inventory History ───────────────────────────────────────
