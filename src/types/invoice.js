@@ -165,10 +165,24 @@ export function parseInvoiceQuantity(value) {
 }
 
 export function normalizeInvoiceItemForSave(item) {
+  const normalizedQuantity = parseInvoiceQuantity(item?.quantity);
+  
+  // CRITICAL FIX: Preserve price exactly as-is, only ensure it's a number
+  // Never default to 0 unless the value is actually null/undefined/empty string
+  let normalizedPrice;
+  if (item?.price === null || item?.price === undefined) {
+    normalizedPrice = 0;
+  } else if (typeof item.price === 'string' && item.price.trim() === '') {
+    normalizedPrice = 0;
+  } else {
+    const parsed = parseFloat(item.price);
+    normalizedPrice = isNaN(parsed) ? 0 : parsed;
+  }
+  
   return {
     ...item,
-    quantity: parseInvoiceQuantity(item?.quantity),
-    price: parseFloat(item?.price || 0) || 0,
+    quantity: normalizedQuantity,
+    price: normalizedPrice,
   };
 }
 
@@ -202,20 +216,82 @@ export function validateInvoiceItems(invoice) {
   return { valid: true, items: validItems };
 }
 
+// Comprehensive invoice validation including totals
+export function validateInvoiceTotals(invoice) {
+  const validItems = filterValidItems(invoice?.items || []);
+  
+  // Calculate expected totals from line items
+  const calculatedTotals = calculateInvoiceTotals(
+    validItems,
+    invoice.taxRate,
+    invoice.discountRate,
+    invoice.shippingCharges
+  );
+  
+  // Check if stored totals match calculated totals (with small tolerance for floating point)
+  const tolerance = 0.01;
+  const subtotalMatch = Math.abs(calculatedTotals.subTotal - (invoice.subTotal || 0)) < tolerance;
+  const totalMatch = Math.abs(calculatedTotals.total - (invoice.total || 0)) < tolerance;
+  
+  if (!subtotalMatch) {
+    console.error('[INVOICE-VALIDATION] Subtotal mismatch', {
+      invoiceNumber: invoice.invoiceNumber,
+      calculated: calculatedTotals.subTotal,
+      stored: invoice.subTotal,
+      items: validItems.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+    });
+  }
+  
+  if (!totalMatch) {
+    console.error('[INVOICE-VALIDATION] Total mismatch', {
+      invoiceNumber: invoice.invoiceNumber,
+      calculated: calculatedTotals.total,
+      stored: invoice.total,
+      items: validItems.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+    });
+  }
+  
+  // Check individual line item calculations
+  for (const item of validItems) {
+    const itemTotal = (item.price || 0) * (item.quantity || 0);
+    if (itemTotal < 0) {
+      console.error('[INVOICE-VALIDATION] Negative line item total', {
+        invoiceNumber: invoice.invoiceNumber,
+        item: { name: item.name, price: item.price, quantity: item.quantity, total: itemTotal }
+      });
+    }
+  }
+  
+  return {
+    valid: true,
+    calculatedTotals,
+    subtotalMatch,
+    totalMatch,
+    items: validItems
+  };
+}
+
 // Calculate invoice totals
 export function calculateInvoiceTotals(items, taxRate, discountRate, shippingCharges = 0) {
   const subTotal = items.reduce(
     (acc, item) => {
-      const price = parseFloat(item.price || 0) || 0;
+      // CRITICAL FIX: Only default to 0 if price is actually null/undefined
+      const price = (item.price === null || item.price === undefined) ? 0 : parseFloat(item.price);
       const quantity = parseInvoiceQuantity(item.quantity);
-      return acc + (price * quantity);
+      const itemTotal = price * quantity;
+      return acc + itemTotal;
     },
     0
   );
 
-  const taxAmount = subTotal * ((taxRate || 0) / 100);
-  const discountAmount = subTotal * ((discountRate || 0) / 100);
-  const total = subTotal - discountAmount + taxAmount + (parseFloat(shippingCharges || 0) || 0);
+  // CRITICAL FIX: Only default to 0 if rates are actually null/undefined
+  const effectiveTaxRate = (taxRate === null || taxRate === undefined) ? 0 : parseFloat(taxRate);
+  const effectiveDiscountRate = (discountRate === null || discountRate === undefined) ? 0 : parseFloat(discountRate);
+  const effectiveShipping = (shippingCharges === null || shippingCharges === undefined) ? 0 : parseFloat(shippingCharges);
+
+  const taxAmount = subTotal * (effectiveTaxRate / 100);
+  const discountAmount = subTotal * (effectiveDiscountRate / 100);
+  const total = subTotal - discountAmount + taxAmount + effectiveShipping;
 
   return {
     subTotal: parseFloat(subTotal.toFixed(2)),

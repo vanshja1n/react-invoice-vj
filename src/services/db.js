@@ -15,25 +15,34 @@ export function normalizeId(id) {
   return str;
 }
 
-// Enhanced ID lookup with fallback strategies
+// Enhanced ID lookup with fallback strategies and comprehensive logging
 export async function getInvoiceWithFallback(id, opts = {}) {
+  const trace = opts.trace || 'unknown';
   const normalizedId = normalizeId(id);
+  
+  console.log('[INVOICE-LOOKUP]', { trace, rawId: String(id), normalizedId: String(normalizedId), normalizedType: typeof normalizedId });
   
   // Try direct lookup first
   try {
     const direct = await db.invoices.get(normalizedId);
-    if (direct) return direct;
+    if (direct) {
+      console.log('[INVOICE-LOOKUP] Direct lookup success', { trace, invoiceNumber: direct.invoiceNumber, total: direct.total });
+      return direct;
+    }
   } catch (e) {
-    console.warn('[ID-LOOKUP] Direct lookup failed for id:', id, e);
+    console.warn('[INVOICE-LOOKUP] Direct lookup failed for id:', id, e);
   }
   
   // Fallback: Try finding by invoiceNumber if string
   if (typeof id === 'string' && !OBJECT_ID_REGEX.test(id)) {
     try {
       const byNumber = await db.invoices.where('invoiceNumber').equals(id).first();
-      if (byNumber) return byNumber;
+      if (byNumber) {
+        console.log('[INVOICE-LOOKUP] InvoiceNumber lookup success', { trace, invoiceNumber: byNumber.invoiceNumber, total: byNumber.total });
+        return byNumber;
+      }
     } catch (e) {
-      console.warn('[ID-LOOKUP] InvoiceNumber lookup failed for id:', id, e);
+      console.warn('[INVOICE-LOOKUP] InvoiceNumber lookup failed for id:', id, e);
     }
   }
   
@@ -45,11 +54,15 @@ export async function getInvoiceWithFallback(id, opts = {}) {
       String(inv.id) === String(normalizedId) ||
       inv.invoiceNumber === String(id)
     );
-    if (match) return match;
+    if (match) {
+      console.log('[INVOICE-LOOKUP] Fallback scan success', { trace, invoiceNumber: match.invoiceNumber, total: match.total });
+      return match;
+    }
   } catch (e) {
-    console.warn('[ID-LOOKUP] Fallback scan failed for id:', id, e);
+    console.warn('[INVOICE-LOOKUP] Fallback scan failed for id:', id, e);
   }
   
+  console.warn('[INVOICE-LOOKUP] All lookups failed', { trace, rawId: String(id) });
   return undefined;
 }
 
@@ -106,8 +119,23 @@ export async function createInvoice(invoiceData) {
     updatedAt: now,
   };
   if (data.id === undefined) delete data.id;
+  
+  console.log('[DB-CREATE-INVOICE] Starting invoice creation', {
+    invoiceNumber: data.invoiceNumber,
+    itemCount: data.items?.length,
+    total: data.total,
+    subtotal: data.subTotal
+  });
+  
   const id = await db.invoices.add(data);
   const result = { ...data, id };
+  
+  console.log('[DB-CREATE-INVOICE] Invoice created successfully', {
+    id,
+    invoiceNumber: result.invoiceNumber,
+    total: result.total
+  });
+  
   await _queue('invoices', 'create', result);
   return result;
 }
@@ -119,8 +147,24 @@ export async function updateInvoice(id, invoiceData) {
     ...invoiceData,
     updatedAt: now,
   };
+  
+  console.log('[DB-UPDATE-INVOICE] Starting invoice update', {
+    id: nid,
+    invoiceNumber: data.invoiceNumber,
+    itemCount: data.items?.length,
+    total: data.total,
+    subtotal: data.subTotal
+  });
+  
   await db.invoices.update(nid, data);
   const result = { ...data, id: nid };
+  
+  console.log('[DB-UPDATE-INVOICE] Invoice updated successfully', {
+    id: nid,
+    invoiceNumber: result.invoiceNumber,
+    total: result.total
+  });
+  
   await _queue('invoices', 'update', result);
   return result;
 }
@@ -338,8 +382,23 @@ export async function createProduct(productData) {
     updatedAt: now,
   };
   if (data.id === undefined) delete data.id;
+  
+  console.log('[DB-CREATE-PRODUCT] Starting product creation', {
+    name: data.name,
+    sku: data.sku,
+    sellingPrice: data.sellingPrice,
+    currentStock: data.currentStock
+  });
+  
   const id = await db.products.add(data);
   const result = { ...data, id };
+  
+  console.log('[DB-CREATE-PRODUCT] Product created successfully', {
+    id,
+    name: result.name,
+    sellingPrice: result.sellingPrice
+  });
+  
   await _queue('products', 'create', result);
   return result;
 }

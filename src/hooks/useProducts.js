@@ -43,9 +43,13 @@ export function useProducts() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      await _readData();
+      console.log('[PRODUCTS-REFRESH] Starting product refresh');
+      const { data } = await _readData();
+      console.log('[PRODUCTS-REFRESH] Product refresh completed', { 
+        productCount: data?.length || 0 
+      });
     } catch (e) {
-      console.error('Failed to load products:', e);
+      console.error('[PRODUCTS-REFRESH] Failed to load products:', e);
     } finally {
       setLoading(false);
     }

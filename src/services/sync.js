@@ -499,15 +499,21 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     const { id: _idAlias, _id, userId: _uid, __v, ...rest } = doc;
     void _idAlias; void _uid;
     
-    // Handle field name mapping for invoice items (client -> server)
+    // CRITICAL FIX: Handle field name mapping for invoice items (client -> server)
+    // Ensure prices are never corrupted during mapping
     if (rest.items && Array.isArray(rest.items)) {
       rest.items = rest.items.map(item => {
         const { price, tax, ...itemRest } = item;
-        // Map client field names to server field names
+        // CRITICAL: Only map if values exist, never default to 0/null
+        const unitPrice = (price !== undefined && price !== null) ? price : 
+                         (item.unitPrice !== undefined && item.unitPrice !== null ? item.unitPrice : 0);
+        const taxRate = (tax !== undefined && tax !== null) ? tax : 
+                        (item.taxRate !== undefined && item.taxRate !== null ? item.taxRate : 0);
+        
         return {
           ...itemRest,
-          unitPrice: price !== undefined ? price : item.unitPrice,
-          taxRate: tax !== undefined ? tax : item.taxRate,
+          unitPrice,
+          taxRate,
         };
       });
     }
@@ -883,6 +889,37 @@ export async function processQueue() {
       const item = queue[i];
       try {
         _log('info', 'OP-START', `[${i + 1}/${queue.length}] ${item.entity}:${item.operation} itemId=${item.id}.`);
+        
+        // CRITICAL FIX: Validate data integrity before processing
+        if (item.operation === 'create' || item.operation === 'update') {
+          if (item.data && item.data.items && Array.isArray(item.data.items)) {
+            const corruptedItems = item.data.items.filter(i => {
+              // Check for corrupted prices
+              if (i.price === 0 && i.productId) {
+                _log('error', 'QUEUE-DATA-CORRUPTION', `Item has price 0 with productId in queue op`, {
+                  entity: item.entity,
+                  operation: item.operation,
+                  itemId: item.id,
+                  itemName: i.name,
+                  productId: i.productId
+                });
+                return true;
+              }
+              return false;
+            });
+            
+            if (corruptedItems.length > 0) {
+              _log('error', 'QUEUE-DATA-CORRUPTION', `Skipping corrupted operation due to ${corruptedItems.length} corrupted items`, {
+                entity: item.entity,
+                operation: item.operation,
+                itemId: item.id
+              });
+              dropped++;
+              continue;
+            }
+          }
+        }
+        
         const res = await runOp(item.entity, item.operation, item.data, { remainingQueueSlice: queue, currentIndex: i });
         if (res && res.skipped) {
           remaining.push(item);
@@ -1026,15 +1063,21 @@ export async function pullFromCloud(opts = {}) {
       const { _id, __v, userId: _uid, ...rest } = doc;
       void _uid;
       
-      // Handle field name mapping for invoice items
+      // CRITICAL FIX: Handle field name mapping for invoice items (server -> client)
+      // Ensure prices are never corrupted during mapping
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
           const { unitPrice, taxRate, ...itemRest } = item;
-          // Map server field names to client field names
+          // CRITICAL: Only map if values exist, never default to 0/null
+          const price = (unitPrice !== undefined && unitPrice !== null) ? unitPrice : 
+                      (item.price !== undefined && item.price !== null ? item.price : 0);
+          const tax = (taxRate !== undefined && taxRate !== null) ? taxRate : 
+                    (item.tax !== undefined && item.tax !== null ? item.tax : 0);
+          
           return {
             ...itemRest,
-            price: unitPrice !== undefined ? unitPrice : item.price,
-            tax: taxRate !== undefined ? taxRate : item.tax,
+            price,
+            tax,
           };
         });
       }
@@ -1214,15 +1257,21 @@ export async function mergeLocalAndCloud() {
       const { _id, __v, userId: _muid, id: _mid, ...rest } = doc;
       void _muid; void _mid;
       
-      // Handle field name mapping for invoice items (client -> server)
+      // CRITICAL FIX: Handle field name mapping for invoice items (client -> server)
+      // Ensure prices are never corrupted during mapping
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
           const { price, tax, ...itemRest } = item;
-          // Map client field names to server field names
+          // CRITICAL: Only map if values exist, never default to 0/null
+          const unitPrice = (price !== undefined && price !== null) ? price : 
+                           (item.unitPrice !== undefined && item.unitPrice !== null ? item.unitPrice : 0);
+          const taxRate = (tax !== undefined && tax !== null) ? tax : 
+                          (item.taxRate !== undefined && item.taxRate !== null ? item.taxRate : 0);
+          
           return {
             ...itemRest,
-            unitPrice: price !== undefined ? price : item.unitPrice,
-            taxRate: tax !== undefined ? tax : item.taxRate,
+            unitPrice,
+            taxRate,
           };
         });
       }

@@ -5,9 +5,8 @@ import { toast } from 'sonner';
 import { ArrowLeft, Download, Printer, Maximize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { InvoiceTemplateRenderer } from '@/components/pdf/InvoiceTemplate';
-import { prepareInvoiceForRender } from '@/services/templateService';
 import { downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
-import { getInvoice } from '@/services/db';
+import { loadInvoiceWithValidation } from '@/services/invoiceService';
 
 export default function InvoicePreviewPage() {
   const navigate = useNavigate();
@@ -22,13 +21,29 @@ export default function InvoicePreviewPage() {
       setLoading(true);
       try {
         console.info('[InvoicePreviewPage] TRACE load start', { routeId: id, routeIdType: typeof id, routeIdLength: String(id).length });
-        const inv = await getInvoice(id, { trace: 'InvoicePreviewPage', retries: 4, backoffMs: 100 });
-        if (inv) {
-          console.info('[InvoicePreviewPage] TRACE load OK', { routeId: id, resolvedId: inv.id, resolvedIdType: typeof inv.id, invoiceNumber: inv.invoiceNumber });
-          setInvoice(inv);
+        
+        // CRITICAL FIX: Use centralized invoice service with validation
+        const result = await loadInvoiceWithValidation(id, { 
+          trace: 'InvoicePreviewPage', 
+          prepareForRender: true,
+          retries: 4 
+        });
+        
+        if (result.success) {
+          console.info('[InvoicePreviewPage] TRACE load OK', { 
+            routeId: id, 
+            resolvedId: result.invoice.id, 
+            resolvedIdType: typeof result.invoice.id, 
+            invoiceNumber: result.invoice.invoiceNumber,
+            total: result.invoice.total
+          });
+          setInvoice(result.invoice);
         } else {
-          console.error('[InvoicePreviewPage] TRACE load FAILED', { routeId: id });
-          toast.error('Invoice not found');
+          console.error('[InvoicePreviewPage] TRACE load FAILED', { 
+            routeId: id, 
+            reason: result.reason 
+          });
+          toast.error(`Invoice not found: ${result.reason}`);
           navigate('/invoices');
         }
       } catch (e) {

@@ -34,7 +34,12 @@ function SortableItem({ item, currency, onEdit, onDelete, onDuplicate }) {
     opacity: isDragging ? 0.5 : 1,
   };
 
-  const lineTotal = (parseFloat(item.price || 0) * parseInt(item.quantity || 0, 10)).toFixed(2);
+  const lineTotal = (() => {
+    // CRITICAL FIX: Only default to 0 if price is actually null/undefined
+    const price = (item.price === null || item.price === undefined) ? 0 : parseFloat(item.price);
+    const quantity = parseInt(item.quantity || 0, 10);
+    return (price * quantity).toFixed(2);
+  })();
 
   return (
     <div ref={setNodeRef} style={style} className="group">
@@ -181,16 +186,36 @@ export function InvoiceItems({ items, currency, onChange }) {
   };
 
   const handleAddProduct = (product) => {
+    // CRITICAL FIX: Ensure all product data is captured in the invoice item
+    // This ensures historical invoices don't depend on current product records
+    const itemPrice = (product.sellingPrice === null || product.sellingPrice === undefined) ? 0 : product.sellingPrice;
+    
     const newItem = {
       id: generateId(),
       name: product.name,
       description: product.sku ? `SKU: ${product.sku}` : '',
       quantity: 1,
-      price: product.sellingPrice || 0,
+      price: itemPrice,
       tax: 0,
       productId: product.id,
       unit: product.unit || 'pcs',
+      // CRITICAL: Store snapshot of product data for historical integrity
+      _productSnapshot: {
+        name: product.name,
+        sku: product.sku,
+        sellingPrice: product.sellingPrice,
+        unit: product.unit,
+        productId: product.id
+      }
     };
+    console.log('[InvoiceItems][ADD_PRODUCT]', { 
+      productId: product.id, 
+      productName: product.name, 
+      productPrice: product.sellingPrice, 
+      newItemPrice: newItem.price,
+      priceType: typeof newItem.price,
+      hasSnapshot: !!newItem._productSnapshot
+    });
     onChange([...items, newItem]);
   };
 

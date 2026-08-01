@@ -24,16 +24,18 @@ import {
   generateInvoiceNumber,
   prepareInvoiceForSave,
   validateInvoiceItems,
+  validateInvoiceTotals,
   INVOICE_STATUS,
 } from '@/types/invoice';
 import {
   createDefaultProduct,
 } from '@/types/product';
-import { getInvoice, getLastInvoiceNumber, normalizeId } from '@/services/db';
+import { getLastInvoiceNumber, normalizeId } from '@/services/db';
 import { getSettings } from '@/services/settings';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useProducts } from '@/hooks/useProducts';
 import { TEMPLATE_LIST, getDefaultTemplateId } from '@/services/templateService';
+import { loadInvoiceWithValidation } from '@/services/invoiceService';
 
 export default function InvoiceEditorPage() {
   const navigate = useNavigate();
@@ -55,13 +57,30 @@ export default function InvoiceEditorPage() {
       try {
         if (isEditing) {
           console.info('[InvoiceEditorPage] TRACE load start', { routeId: id, routeIdType: typeof id, routeIdLength: String(id).length });
-          const existing = await getInvoice(id, { trace: 'InvoiceEditorPage', retries: 4, backoffMs: 100 });
-          if (existing) {
-            console.info('[InvoiceEditorPage] TRACE load OK', { routeId: id, resolvedId: existing.id, resolvedIdType: typeof existing.id, invoiceNumber: existing.invoiceNumber });
-            setInvoice(existing);
+          
+          // CRITICAL FIX: Use centralized invoice service with validation
+          const result = await loadInvoiceWithValidation(id, { 
+            trace: 'InvoiceEditorPage', 
+            prepareForRender: false, // Don't prepare for render in edit mode
+            retries: 4 
+          });
+          
+          if (result.success) {
+            console.info('[InvoiceEditorPage] TRACE load OK', { 
+              routeId: id, 
+              resolvedId: result.invoice.id, 
+              resolvedIdType: typeof result.invoice.id, 
+              invoiceNumber: result.invoice.invoiceNumber,
+              total: result.invoice.total,
+              itemCount: result.invoice.items?.length
+            });
+            setInvoice(result.invoice);
           } else {
-            console.error('[InvoiceEditorPage] TRACE load FAILED', { routeId: id });
-            toast.error('Invoice not found');
+            console.error('[InvoiceEditorPage] TRACE load FAILED', { 
+              routeId: id, 
+              reason: result.reason 
+            });
+            toast.error(`Invoice not found: ${result.reason}`);
             navigate('/invoices');
             return;
           }
@@ -141,6 +160,13 @@ export default function InvoiceEditorPage() {
     if (_saveInFlightRef.current) return undefined;
     _saveInFlightRef.current = true;
 
+    console.log('[INVOICE-SAVE] Starting save process', { 
+      invoiceNumber: invoice.invoiceNumber, 
+      itemCount: invoice.items?.length,
+      currentTotal: invoice.total,
+      currentSubtotal: invoice.subTotal
+    });
+
     const validation = validateInvoiceItems(invoice);
     if (!validation.valid) {
       _saveInFlightRef.current = false;
@@ -148,9 +174,27 @@ export default function InvoiceEditorPage() {
       return undefined;
     }
 
+    // CRITICAL FIX: Validate totals before saving
+    const totalsValidation = validateInvoiceTotals(invoice);
+    if (!totalsValidation.subtotalMatch || !totalsValidation.totalMatch) {
+      console.error('[INVOICE-SAVE] Totals validation failed', totalsValidation);
+      _saveInFlightRef.current = false;
+      toast.error('Invoice totals are inconsistent. Please check line items.');
+      return undefined;
+    }
+
     setSaving(true);
     try {
       const dataToSave = prepareInvoiceForSave(invoice);
+      
+      console.log('[INVOICE-SAVE] Prepared data for save', {
+        invoiceNumber: dataToSave.invoiceNumber,
+        itemCount: dataToSave.items?.length,
+        calculatedTotal: dataToSave.total,
+        calculatedSubtotal: dataToSave.subTotal,
+        items: dataToSave.items.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+      });
+      
       let savedInvoice;
 
       if (isEditing) {
@@ -165,6 +209,12 @@ export default function InvoiceEditorPage() {
           setTimeout(() => navigate(next, { replace: true }), 0);
         }
       }
+
+      console.log('[INVOICE-SAVE] Save successful', { 
+        invoiceId: savedInvoice?.id, 
+        invoiceNumber: savedInvoice?.invoiceNumber,
+        savedTotal: savedInvoice?.total 
+      });
 
       // Find custom items
       const customItems = dataToSave.items.filter(item =>
@@ -184,7 +234,7 @@ export default function InvoiceEditorPage() {
       }
       return savedInvoice;
     } catch (e) {
-      console.error('Failed to save:', e);
+      console.error('[INVOICE-SAVE] Failed to save:', e);
       toast.error('Failed to save invoice');
       return undefined;
     } finally {

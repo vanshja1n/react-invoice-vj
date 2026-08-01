@@ -37,9 +37,16 @@ export function useInvoiceData(invoice) {
     hasShipping: parseFloat(invoice.shippingCharges || 0) > 0,
     hasNotes: !!(invoice.notes || invoice.terms),
     itemAmount: (item) => {
-      const amt = parseFloat(item.price || 0) * parseInt(item.quantity || 0, 10);
+      // CRITICAL FIX: Only default to 0 if price is actually null/undefined
+      const price = (item.price === null || item.price === undefined) ? 0 : parseFloat(item.price);
+      const quantity = parseInt(item.quantity || 0, 10);
+      const amt = price * quantity;
       return formatCurrency(amt, invoice.currency);
     },
-    itemPrice: (item) => `${invoice.currency}${parseFloat(item.price || 0).toFixed(2)}`,
+    itemPrice: (item) => {
+      // CRITICAL FIX: Only default to 0 if price is actually null/undefined
+      const price = (item.price === null || item.price === undefined) ? 0 : parseFloat(item.price);
+      return `${invoice.currency}${price.toFixed(2)}`;
+    },
   };
 }
