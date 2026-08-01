@@ -9,6 +9,7 @@ import {
   getInvoiceStats,
   getMonthlyRevenue,
   getLastInvoiceNumber,
+  normalizeId,
 } from '@/services/db';
 import {
   handleInvoiceStockUpdate,
@@ -192,7 +193,8 @@ export function useInvoices() {
     setLoading(true);
     try {
       const all = await getAllInvoices();
-      const filtered = all.filter((inv) => inv.customerId === customerId);
+      const target = normalizeId(customerId);
+      const filtered = all.filter((inv) => normalizeId(inv.customerId) === target);
       setInvoices(filtered);
     } finally {
       setLoading(false);

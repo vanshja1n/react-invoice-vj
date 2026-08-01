@@ -21,7 +21,7 @@ export default function InvoicePreviewPage() {
     const load = async () => {
       setLoading(true);
       try {
-        const inv = await getInvoice(parseInt(id, 10));
+        const inv = await getInvoice(id);
         if (inv) {
           setInvoice(inv);
         } else {

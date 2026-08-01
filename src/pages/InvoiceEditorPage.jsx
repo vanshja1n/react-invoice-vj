@@ -29,7 +29,7 @@ import {
 import {
   createDefaultProduct,
 } from '@/types/product';
-import { getInvoice, getLastInvoiceNumber, getAllProducts } from '@/services/db';
+import { getInvoice, getLastInvoiceNumber, getAllProducts, normalizeId } from '@/services/db';
 import { getSettings } from '@/services/settings';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useProducts } from '@/hooks/useProducts';
@@ -54,7 +54,7 @@ export default function InvoiceEditorPage() {
       setLoading(true);
       try {
         if (isEditing) {
-          const existing = await getInvoice(parseInt(id, 10));
+          const existing = await getInvoice(id);
           if (existing) {
             setInvoice(existing);
           } else {
@@ -151,8 +151,8 @@ export default function InvoiceEditorPage() {
       let savedInvoice;
 
       if (isEditing) {
-        savedInvoice = await update(parseInt(id, 10), dataToSave);
-        setInvoice({ ...dataToSave, id: parseInt(id, 10) });
+        savedInvoice = await update(id, dataToSave);
+        setInvoice({ ...dataToSave, id: normalizeId(id) });
         toast.success('Invoice updated successfully');
       } else {
         savedInvoice = await add(dataToSave);

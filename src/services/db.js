@@ -2,6 +2,19 @@ import Dexie from 'dexie';
 import { isOverdue } from '@/types/invoice';
 import { generateSKU } from '@/types/product';
 
+const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
+
+export function normalizeId(id) {
+  if (id === undefined || id === null) return id;
+  if (typeof id === 'number') return id;
+  const str = String(id).trim();
+  if (!str) return id;
+  if (OBJECT_ID_REGEX.test(str)) return str;
+  const num = Number(str);
+  if (!Number.isNaN(num) && Number.isFinite(num)) return num;
+  return str;
+}
+
 function _isAuthed() {
   return !!localStorage.getItem('invoicehub_token');
 }
@@ -55,24 +68,26 @@ export async function createInvoice(invoiceData) {
 }
 
 export async function updateInvoice(id, invoiceData) {
+  const nid = normalizeId(id);
   const now = new Date().toISOString();
   const data = {
     ...invoiceData,
     updatedAt: now,
   };
-  await db.invoices.update(id, data);
-  const result = { ...data, id };
+  await db.invoices.update(nid, data);
+  const result = { ...data, id: nid };
   await _queue('invoices', 'update', result);
   return result;
 }
 
 export async function deleteInvoice(id) {
-  await db.invoices.delete(id);
-  await _queue('invoices', 'delete', id);
+  const nid = normalizeId(id);
+  await db.invoices.delete(nid);
+  await _queue('invoices', 'delete', nid);
 }
 
 export async function getInvoice(id) {
-  return await db.invoices.get(id);
+  return await db.invoices.get(normalizeId(id));
 }
 
 export async function getAllInvoices() {
@@ -236,24 +251,26 @@ export async function createProduct(productData) {
 }
 
 export async function updateProduct(id, productData) {
+  const nid = normalizeId(id);
   const now = new Date().toISOString();
   const data = {
     ...productData,
     updatedAt: now,
   };
-  await db.products.update(id, data);
-  const result = { ...data, id };
+  await db.products.update(nid, data);
+  const result = { ...data, id: nid };
   await _queue('products', 'update', result);
   return result;
 }
 
 export async function deleteProduct(id) {
-  await db.products.delete(id);
-  await _queue('products', 'delete', id);
+  const nid = normalizeId(id);
+  await db.products.delete(nid);
+  await _queue('products', 'delete', nid);
 }
 
 export async function getProduct(id) {
-  return await db.products.get(id);
+  return await db.products.get(normalizeId(id));
 }
 
 export async function getAllProducts() {
@@ -301,7 +318,8 @@ export async function getProductCategories() {
 }
 
 export async function reduceProductStock(productId, quantity) {
-  const product = await db.products.get(productId);
+  const nid = normalizeId(productId);
+  const product = await db.products.get(nid);
   if (!product) return null;
 
   const qty = parseInt(quantity, 10) || 0;
@@ -309,17 +327,18 @@ export async function reduceProductStock(productId, quantity) {
 
   const previousStock = product.currentStock;
   const newStock = Math.max(0, previousStock - qty);
-  await db.products.update(productId, {
+  await db.products.update(nid, {
     currentStock: newStock,
     updatedAt: new Date().toISOString(),
   });
   const result = { ...product, previousStock, currentStock: newStock, quantityChanged: -qty };
-  await _queue('products', 'update', { id: productId, currentStock: newStock, updatedAt: new Date().toISOString() });
+  await _queue('products', 'update', { id: nid, currentStock: newStock, updatedAt: new Date().toISOString() });
   return result;
 }
 
 export async function restoreProductStock(productId, quantity) {
-  const product = await db.products.get(productId);
+  const nid = normalizeId(productId);
+  const product = await db.products.get(nid);
   if (!product) return null;
 
   const qty = parseInt(quantity, 10) || 0;
@@ -327,22 +346,23 @@ export async function restoreProductStock(productId, quantity) {
 
   const previousStock = product.currentStock;
   const newStock = previousStock + qty;
-  await db.products.update(productId, {
+  await db.products.update(nid, {
     currentStock: newStock,
     updatedAt: new Date().toISOString(),
   });
   const result = { ...product, previousStock, currentStock: newStock, quantityChanged: qty };
-  await _queue('products', 'update', { id: productId, currentStock: newStock, updatedAt: new Date().toISOString() });
+  await _queue('products', 'update', { id: nid, currentStock: newStock, updatedAt: new Date().toISOString() });
   return result;
 }
 
 export async function setProductStock(productId, newStock) {
-  const product = await db.products.get(productId);
+  const nid = normalizeId(productId);
+  const product = await db.products.get(nid);
   if (!product) return null;
 
   const previousStock = product.currentStock;
   const stock = Math.max(0, parseInt(newStock, 10) || 0);
-  await db.products.update(productId, {
+  await db.products.update(nid, {
     currentStock: stock,
     updatedAt: new Date().toISOString(),
   });
@@ -352,7 +372,7 @@ export async function setProductStock(productId, newStock) {
     currentStock: stock,
     quantityChanged: stock - previousStock,
   };
-  await _queue('products', 'update', { id: productId, currentStock: stock, updatedAt: new Date().toISOString() });
+  await _queue('products', 'update', { id: nid, currentStock: stock, updatedAt: new Date().toISOString() });
   return result;
 }
 
@@ -400,24 +420,26 @@ export async function createCustomer(customerData) {
 }
 
 export async function updateCustomer(id, customerData) {
+  const nid = normalizeId(id);
   const now = new Date().toISOString();
   const data = {
     ...customerData,
     updatedAt: now,
   };
-  await db.customers.update(id, data);
-  const result = { ...data, id };
+  await db.customers.update(nid, data);
+  const result = { ...data, id: nid };
   await _queue('customers', 'update', result);
   return result;
 }
 
 export async function deleteCustomer(id) {
-  await db.customers.delete(id);
-  await _queue('customers', 'delete', id);
+  const nid = normalizeId(id);
+  await db.customers.delete(nid);
+  await _queue('customers', 'delete', nid);
 }
 
 export async function getCustomer(id) {
-  return await db.customers.get(id);
+  return await db.customers.get(normalizeId(id));
 }
 
 export async function getAllCustomers() {

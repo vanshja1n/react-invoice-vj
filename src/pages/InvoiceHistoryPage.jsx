@@ -39,7 +39,7 @@ import { TableSkeleton } from '@/components/shared/LoadingSkeleton';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useCustomers } from '@/hooks/useCustomers';
 import { formatCurrency, formatDate } from '@/types/invoice';
-import { createInvoice } from '@/services/db';
+import { createInvoice, normalizeId } from '@/services/db';
 import { generateInvoicePDF, downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
 
 export default function InvoiceHistoryPage() {
@@ -88,7 +88,7 @@ export default function InvoiceHistoryPage() {
     if (customerId === 'all') {
       refresh();
     } else {
-      filterByCustomer(parseInt(customerId, 10));
+      filterByCustomer(normalizeId(customerId));
     }
   }, [filterByCustomer, refresh]);
 
