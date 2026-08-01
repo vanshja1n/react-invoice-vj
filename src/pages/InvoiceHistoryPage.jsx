@@ -483,7 +483,7 @@ function InvoiceActions({ invoice, onEdit, onPreview, onDuplicate, onDownload, o
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem onClick={onEdit} disabled={isCancelled}>
+        <DropdownMenuItem onClick={onEdit}>
           <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onPreview}>
