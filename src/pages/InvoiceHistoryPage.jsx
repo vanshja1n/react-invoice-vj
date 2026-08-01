@@ -39,7 +39,7 @@ import { TableSkeleton } from '@/components/shared/LoadingSkeleton';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useCustomers } from '@/hooks/useCustomers';
 import { formatCurrency, formatDate } from '@/types/invoice';
-import { createInvoice, normalizeId } from '@/services/db';
+import { normalizeId } from '@/services/db';
 import { generateInvoicePDF, downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
 
 export default function InvoiceHistoryPage() {
@@ -49,6 +49,7 @@ export default function InvoiceHistoryPage() {
     loading,
     refresh,
     remove,
+    add,
     search,
     filterByStatus,
     filterByCustomer,
@@ -141,8 +142,9 @@ export default function InvoiceHistoryPage() {
         invoiceNumber: `${inv.invoiceNumber}-COPY`,
         status: 'draft',
       };
-      const saved = await createInvoice(duplicate);
-      await refresh();
+      // Use the hook's add() so stock updates, queue, and dedup guards all fire.
+      const saved = await add(duplicate);
+      // refresh() is called inside add() already; no need to call it again.
       toast.success('Invoice duplicated');
       navigate(`/invoices/${saved.id}/edit`);
     } catch {

@@ -95,30 +95,26 @@ export function validateInvoiceIntegrity(invoice) {
     return { valid: false, reason: 'Invoice items are missing or invalid' };
   }
 
-  // Check for corrupted prices
+  // Check for structurally impossible data only.
+  // price=0 is valid (free / promotional items — user set it intentionally).
+  // Only flag negative prices or negative quantities which can never be correct.
   const corruptedItems = invoice.items.filter(item => {
-    // Price should never be 0 unless explicitly set by user
-    if (item.price === 0 && item.productId) {
-      console.error(`${LOG_TAG}[VALIDATION] Product-linked item has price 0`, {
-        invoiceNumber: invoice.invoiceNumber,
-        itemId: item.id,
-        productId: item.productId,
-        itemName: item.name
-      });
-      return true;
-    }
-    
-    // Check for negative values
-    if (item.price < 0 || item.quantity < 0) {
-      console.error(`${LOG_TAG}[VALIDATION] Negative values found`, {
+    if (item.price < 0) {
+      console.error(`${LOG_TAG}[VALIDATION] Negative price found`, {
         invoiceNumber: invoice.invoiceNumber,
         itemId: item.id,
         price: item.price,
-        quantity: item.quantity
       });
       return true;
     }
-    
+    if (item.quantity < 0) {
+      console.error(`${LOG_TAG}[VALIDATION] Negative quantity found`, {
+        invoiceNumber: invoice.invoiceNumber,
+        itemId: item.id,
+        quantity: item.quantity,
+      });
+      return true;
+    }
     return false;
   });
 
@@ -130,17 +126,23 @@ export function validateInvoiceIntegrity(invoice) {
     };
   }
 
-  // Check totals consistency
+  // total===0 is only corrupt when the invoice has items that should produce
+  // a non-zero total (qty > 0 AND price > 0).  An all-free invoice (all
+  // prices = 0) legitimately has total = 0.
   if (invoice.total === 0 && invoice.items.length > 0) {
-    const hasValidItems = invoice.items.some(item => item.price > 0 && item.quantity > 0);
-    if (hasValidItems) {
-      console.error(`${LOG_TAG}[VALIDATION] Total is 0 but valid items exist`, {
+    const hasChargeable = invoice.items.some(item => {
+      const qty = typeof item.quantity === 'string' ? parseInt(item.quantity, 10) : (item.quantity || 0);
+      const price = typeof item.price === 'string' ? parseFloat(item.price) : (item.price || 0);
+      return qty > 0 && price > 0;
+    });
+    if (hasChargeable) {
+      console.error(`${LOG_TAG}[VALIDATION] Total is 0 but chargeable items exist`, {
         invoiceNumber: invoice.invoiceNumber,
         total: invoice.total,
         itemCount: invoice.items.length,
-        items: invoice.items.map(i => ({ name: i.name, price: i.price, quantity: i.quantity }))
+        items: invoice.items.map(i => ({ name: i.name, price: i.price, quantity: i.quantity })),
       });
-      return { valid: false, reason: 'Total is 0 but valid items exist' };
+      return { valid: false, reason: 'Total is 0 but chargeable items exist' };
     }
   }
 

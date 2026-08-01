@@ -499,32 +499,33 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     const { id: _idAlias, _id, userId: _uid, __v, ...rest } = doc;
     void _idAlias; void _uid;
     
-    // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
-    // No field mapping needed for invoice items - pass through as-is
-    // Only ensure values are preserved and not defaulted to 0/null
+    // Preserve all invoice item fields exactly. Only coerce truly absent
+    // values (null / undefined / empty-string) to safe numeric defaults so
+    // MongoDB never receives NaN.  A value that is already a valid number —
+    // including 0 (free / promotional items) — is passed through unchanged.
     if (rest.items && Array.isArray(rest.items)) {
       rest.items = rest.items.map(item => {
         const { price, tax, unit, ...itemRest } = item;
-        // CRITICAL: Preserve exact values, only ensure they're numbers
-        const safePrice = (price === null || price === undefined) ? 0 : 
-                        (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
-        const safeTax = (tax === null || tax === undefined) ? 0 : 
-                      (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
-        
+        const safeNum = (v, fallback = 0) => {
+          if (v === null || v === undefined) return fallback;
+          if (typeof v === 'string' && v.trim() === '') return fallback;
+          const n = parseFloat(v);
+          return isNaN(n) ? fallback : n;
+        };
         return {
           ...itemRest,
-          price: safePrice,
-          tax: safeTax,
-          unit: unit || 'pcs',
+          price: safeNum(price),
+          tax: safeNum(tax),
+          unit: (unit !== undefined && unit !== null) ? unit : 'pcs',
         };
       });
     }
-    
-    // Handle GST field mapping (preserve both for compatibility)
+
+    // Preserve both GST field names for cross-version compatibility.
     if (rest.companyGst !== undefined && !rest.gstNumber) {
       rest.gstNumber = rest.companyGst;
     }
-    
+
     return rest;
   };
 
@@ -897,76 +898,48 @@ export async function processQueue() {
           let isCorrupted = false;
           let corruptionReason = '';
           
-          // Validate invoices
+          // Validate invoices — only reject data that is structurally impossible.
+          // price=0 is valid (free/promotional items). quantity=0 is invalid (nothing to invoice).
           if (item.entity === 'invoices' && item.data) {
             if (item.data.items && Array.isArray(item.data.items)) {
-              const corruptedItems = item.data.items.filter(i => {
-                // Check for corrupted prices
-                if (i.price === 0 && i.productId) {
-                  _log('error', 'QUEUE-DATA-CORRUPTION', `Invoice item has price 0 with productId`, {
-                    itemId: item.id,
-                    itemName: i.name,
-                    productId: i.productId
-                  });
-                  return true;
-                }
-                // Check for corrupted quantities
-                if (i.quantity === 0) {
-                  _log('error', 'QUEUE-DATA-CORRUPTION', `Invoice item has quantity 0`, {
-                    itemId: item.id,
-                    itemName: i.name
-                  });
-                  return true;
-                }
-                return false;
+              const zeroQtyItems = item.data.items.filter(i => {
+                const qty = typeof i.quantity === 'string' ? parseInt(i.quantity, 10) : i.quantity;
+                return qty !== undefined && qty !== null && qty === 0 && !isNaN(qty);
               });
-              
-              if (corruptedItems.length > 0) {
+
+              if (zeroQtyItems.length > 0) {
                 isCorrupted = true;
-                corruptionReason = `${corruptedItems.length} corrupted invoice items`;
+                corruptionReason = `${zeroQtyItems.length} invoice item(s) have quantity 0`;
               }
             }
-            
-            // Check for corrupted totals
-            if (item.data.total === 0 && item.data.items?.length > 0) {
-              const hasValidItems = item.data.items.some(i => i.price > 0 && i.quantity > 0);
-              if (hasValidItems) {
+
+            // Total of 0 with items only indicates corruption when ALL items also have quantity > 0 and price > 0.
+            if (!isCorrupted && item.data.total === 0 && (item.data.items || []).length > 0) {
+              const hasChargeable = item.data.items.some(i => {
+                const qty = typeof i.quantity === 'string' ? parseInt(i.quantity, 10) : (i.quantity || 0);
+                const price = typeof i.price === 'string' ? parseFloat(i.price) : (i.price || 0);
+                return qty > 0 && price > 0;
+              });
+              if (hasChargeable) {
                 isCorrupted = true;
-                corruptionReason = 'Total is 0 but valid items exist';
+                corruptionReason = 'Invoice total is 0 but chargeable items exist';
                 _log('error', 'QUEUE-DATA-CORRUPTION', corruptionReason, { itemId: item.id });
               }
             }
           }
           
-          // Validate products
+          // Validate products — only flag structurally impossible data.
+          // sellingPrice=0 is valid (free product). Log it but don't block.
           if (item.entity === 'products' && item.data) {
             if (item.data.sellingPrice === 0 && item.data.name) {
-              isCorrupted = true;
-              corruptionReason = 'Product sellingPrice is 0';
-              _log('error', 'QUEUE-DATA-CORRUPTION', corruptionReason, { 
-                itemId: item.id,
-                productName: item.data.name 
-              });
+              _log('info', 'QUEUE-PRODUCT-FREE', `Product "${item.data.name}" has sellingPrice=0 (free product — allowed).`, { itemId: item.id });
             }
             if (item.data.currentStock === 0 && item.data.name) {
-              // Stock can be 0, but log it for debugging
-              _log('warn', 'QUEUE-STOCK-ZERO', `Product has 0 stock`, { 
-                itemId: item.id,
-                productName: item.data.name 
-              });
+              _log('info', 'QUEUE-STOCK-ZERO', `Product "${item.data.name}" has currentStock=0 (out-of-stock — allowed).`, { itemId: item.id });
             }
           }
           
-          // Validate customers
-          if (item.entity === 'customers' && item.data) {
-            if (!item.data.address && item.data.name) {
-              _log('warn', 'QUEUE-CUSTOMER-NO-ADDRESS', `Customer has no address`, { 
-                itemId: item.id,
-                customerName: item.data.name 
-              });
-              // Don't fail, just warn - address can be empty
-            }
-          }
+          // Customers: no structural corruption checks needed — all fields optional.
           
           if (isCorrupted) {
             _log('error', 'QUEUE-DATA-CORRUPTION', `Skipping corrupted operation: ${corruptionReason}`, {
@@ -1117,37 +1090,41 @@ export async function pullFromCloud(opts = {}) {
       }
     };
 
+    // Map a MongoDB document into a Dexie-compatible record.
+    // Rules:
+    //  - Strip Mongo internals (_id, __v, userId) and set id = _id
+    //  - Preserve ALL numeric values exactly, including 0 (free items, zero stock)
+    //  - Only coerce truly absent values (null / undefined / empty-string) to 0
+    //  - Preserve both GST field names for cross-version compatibility
+    const safeNum = (v, fallback = 0) => {
+      if (v === null || v === undefined) return fallback;
+      if (typeof v === 'string' && v.trim() === '') return fallback;
+      const n = parseFloat(v);
+      return isNaN(n) ? fallback : n;
+    };
+
     const toId = (doc) => {
       if (!doc) return doc;
       const { _id, __v, userId: _uid, ...rest } = doc;
       void _uid;
-      
-      // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
-      // No field mapping needed for invoice items - pass through as-is
-      // Only ensure values are preserved and not defaulted to 0/null
+
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
           const { price, tax, unit, ...itemRest } = item;
-          // CRITICAL: Preserve exact values, only ensure they're numbers
-          const safePrice = (price === null || price === undefined) ? 0 : 
-                          (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
-          const safeTax = (tax === null || tax === undefined) ? 0 : 
-                        (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
-          
           return {
             ...itemRest,
-            price: safePrice,
-            tax: safeTax,
-            unit: unit || 'pcs',
+            price: safeNum(price),
+            tax: safeNum(tax),
+            unit: (unit !== undefined && unit !== null) ? unit : 'pcs',
           };
         });
       }
-      
-      // Handle GST field mapping (preserve both for compatibility)
+
+      // Preserve both GST field names for cross-version compatibility.
       if (rest.gstNumber !== undefined && !rest.companyGst) {
         rest.companyGst = rest.gstNumber;
       }
-      
+
       return { ...rest, id: _id };
     };
 
@@ -1317,85 +1294,69 @@ export async function mergeLocalAndCloud() {
       if (Array.isArray(doc)) return doc.map(strip);
       const { _id, __v, userId: _muid, id: _mid, ...rest } = doc;
       void _muid; void _mid;
-      
-      // CRITICAL FIX: MongoDB schema now matches client schema (price, tax, unit)
-      // No field mapping needed for invoice items - pass through as-is
-      // Only ensure values are preserved and not defaulted to 0/null
+
       if (rest.items && Array.isArray(rest.items)) {
         rest.items = rest.items.map(item => {
           const { price, tax, unit, ...itemRest } = item;
-          // CRITICAL: Preserve exact values, only ensure they're numbers
-          const safePrice = (price === null || price === undefined) ? 0 : 
-                          (typeof price === 'string' && price.trim() === '' ? 0 : parseFloat(price));
-          const safeTax = (tax === null || tax === undefined) ? 0 : 
-                        (typeof tax === 'string' && tax.trim() === '' ? 0 : parseFloat(tax));
-          
+          const safeNum = (v, fallback = 0) => {
+            if (v === null || v === undefined) return fallback;
+            if (typeof v === 'string' && v.trim() === '') return fallback;
+            const n = parseFloat(v);
+            return isNaN(n) ? fallback : n;
+          };
           return {
             ...itemRest,
-            price: safePrice,
-            tax: safeTax,
-            unit: unit || 'pcs',
+            price: safeNum(price),
+            tax: safeNum(tax),
+            unit: (unit !== undefined && unit !== null) ? unit : 'pcs',
           };
         });
       }
-      
-      // Handle GST field mapping (preserve both for compatibility)
+
+      // Preserve both GST field names for cross-version compatibility.
       if (rest.companyGst !== undefined && !rest.gstNumber) {
         rest.gstNumber = rest.companyGst;
       }
-      
+
       return rest;
     };
 
     const mergeByKey = (local, remote, keyFn) => {
       const map = new Map();
-      
-      // CRITICAL FIX: Deep merge function that never overwrites valid values with undefined/null/0
+
+      // Deep merge: source fields overwrite target fields, except when the
+      // source value is undefined or null (absent).  Numeric 0 IS a valid
+      // business value (free items, zero discount, zero tax) and must always
+      // be written through.
       const deepMerge = (target, source) => {
         const result = { ...target };
-        
+
         for (const key of Object.keys(source)) {
           const sourceValue = source[key];
-          const targetValue = target[key];
-          
-          // Skip undefined/null values from source - preserve target's value
-          if (sourceValue === undefined || sourceValue === null) {
-            continue;
-          }
-          
-          // Handle nested objects (like invoice items)
-          if (key === 'items' && Array.isArray(sourceValue) && Array.isArray(targetValue)) {
-            // Deep merge arrays by index, preserving all fields
+
+          // Skip truly absent values — preserve whatever target had.
+          if (sourceValue === undefined || sourceValue === null) continue;
+
+          // Special handling for invoice items array: merge by element index.
+          if (key === 'items' && Array.isArray(sourceValue) && Array.isArray(result[key])) {
             result[key] = sourceValue.map((sourceItem, index) => {
-              const targetItem = targetValue[index];
-              if (!targetItem) {
-                // Source has item at this index, target doesn't - use source
-                return sourceItem;
-              }
-              // Both have items - merge them, preserving all fields
-              const merged = { ...targetItem };
+              const targetItem = result[key][index];
+              if (!targetItem) return sourceItem;
+              // Merge item fields — 0 is a valid price/qty/tax/discount value.
+              const mergedItem = { ...targetItem };
               for (const itemKey of Object.keys(sourceItem)) {
-                const sourceItemValue = sourceItem[itemKey];
-                // CRITICAL: Never overwrite valid values with undefined/null/0
-                if (sourceItemValue !== undefined && sourceItemValue !== null) {
-                  // For numeric fields (price, quantity, etc.), only overwrite if source is not 0 when target has a value
-                  if (['price', 'quantity', 'tax', 'discount', 'subtotal', 'total', 'amount'].includes(itemKey)) {
-                    if (sourceItemValue !== 0 || targetItem[itemKey] === undefined || targetItem[itemKey] === null) {
-                      merged[itemKey] = sourceItemValue;
-                    }
-                  } else {
-                    merged[itemKey] = sourceItemValue;
-                  }
+                const sv = sourceItem[itemKey];
+                if (sv !== undefined && sv !== null) {
+                  mergedItem[itemKey] = sv;
                 }
               }
-              return merged;
+              return mergedItem;
             });
           } else {
-            // For regular fields, only overwrite if source is not undefined/null
             result[key] = sourceValue;
           }
         }
-        
+
         return result;
       };
       
@@ -1606,8 +1567,14 @@ const _singleton = {
   startedAt: 0,
   running: false,
   lastRunAt: 0,
+  lastPullAt: 0,   // timestamp of the last successful pullFromCloud
   debounceTimer: null,
 };
+
+// Minimum gap between successive cloud pulls in the engine tick.
+// Prevents the 10 s interval from unconditionally wiping + rewriting Dexie
+// while the user is actively creating / editing data.
+const MIN_PULL_INTERVAL_MS = 30_000;
 
 export function startSyncEngine(intervalMs = 10000) {
   if (!isAuthenticated()) {
@@ -1621,6 +1588,7 @@ export function startSyncEngine(intervalMs = 10000) {
   _singleton.running = true;
   _singleton.startedAt = Date.now();
   _singleton.lastRunAt = 0;
+  _singleton.lastPullAt = 0;
 
   const tick = async () => {
     if (!isAuthenticated()) {
@@ -1632,21 +1600,40 @@ export function startSyncEngine(intervalMs = 10000) {
       return;
     }
     _singleton.lastRunAt = Date.now();
-    _log('info', 'ENGINE', 'Cloud sync...');
+    _log('info', 'ENGINE', 'Tick — processing queue…');
     try {
       const locked = isSyncChoiceLocked() || await isSyncChoiceUnresolved();
-      if (locked) {
-        return;
-      }
+      if (locked) return;
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-      const pending = await processQueue();
+
+      // 1. Drain the queue first.  Pull is only safe once all local writes
+      //    have been committed to the cloud so we don't overwrite them.
+      const remaining = await processQueue();
+
+      // 2. Pull from cloud only when:
+      //    a) The queue is fully drained (no pending writes).
+      //    b) At least MIN_PULL_INTERVAL_MS has elapsed since the last pull.
+      //    This prevents the engine from hammering Dexie with full
+      //    clear+rewrite cycles while the user is actively working.
+      const queueDrained = remaining === 0;
+      const pullDue = (Date.now() - _singleton.lastPullAt) >= MIN_PULL_INTERVAL_MS;
+
       let pulled = false;
-      try {
-        await pullFromCloud();
-        pulled = true;
-      } catch (_err) { void _err; pulled = false; }
-      _log('info', 'ENGINE', `Cloud sync finished. pendingQueue=${pending}, pulled=${pulled}.`);
-      if (pending > 0 || pulled) {
+      if (queueDrained && pullDue) {
+        try {
+          await pullFromCloud();
+          _singleton.lastPullAt = Date.now();
+          pulled = true;
+        } catch (_err) {
+          // QUEUE_NOT_DRAINED, SYNC_LOCKED, OFFLINE, etc. — all safe to ignore here.
+          void _err;
+        }
+      } else {
+        _log('info', 'ENGINE', `Pull skipped — queueDrained=${queueDrained}, pullDue=${pullDue} (lastPull=${_singleton.lastPullAt ? new Date(_singleton.lastPullAt).toISOString() : 'never'}).`);
+      }
+
+      _log('info', 'ENGINE', `Tick done. remaining=${remaining}, pulled=${pulled}.`);
+      if (remaining > 0 || pulled) {
         dispatchDataRefreshed();
       }
     } catch (err) {

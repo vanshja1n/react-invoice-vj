@@ -12,6 +12,7 @@ const baseCustomerSchema = z.object({
   address: z.string().optional().nullable(),
   gstNumber: z.string().optional().nullable(),
   company: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
 });
 
 const createCustomerSchema = baseCustomerSchema.refine(

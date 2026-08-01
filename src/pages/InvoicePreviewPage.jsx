@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { InvoiceTemplateRenderer } from '@/components/pdf/InvoiceTemplate';
 import { downloadInvoicePdf, printInvoicePdf } from '@/services/pdf';
 import { loadInvoiceWithValidation } from '@/services/invoiceService';
+import { prepareInvoiceForRender } from '@/services/templateService';
 
 export default function InvoicePreviewPage() {
   const navigate = useNavigate();
