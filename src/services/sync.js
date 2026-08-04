@@ -168,11 +168,7 @@ export async function getCloudDataCounts() {
       products: (data.products || []).length,
       customers: (data.customers || []).length,
       inventoryHistory: (data.inventoryHistory || []).length,
-      total:
-        (data.invoices || []).length +
-        (data.products || []).length +
-        (data.customers || []).length +
-        (data.inventoryHistory || []).length,
+      total: (data.invoices || []).length + (data.products || []).length + (data.customers || []).length + (data.inventoryHistory || []).length,
     };
   } catch {
     return { invoices: 0, products: 0, customers: 0, inventoryHistory: 0, total: 0 };
@@ -214,7 +210,7 @@ export async function hasLocalData() {
     if (has) {
       _log('info', 'LOCAL-CHECK', `Local data found. invoices=${inv.length}, products=${prod.length}, customers=${cust.length}, invHist=${invHist.length}, pendingOps=${queue.length}.`);
     } else {
-      _log('info', 'LOCAL-CHECK', 'No local data present (entities + queue). Settings will sync silently.`);
+      _log('info', 'LOCAL-CHECK', 'No local data present. Settings will sync silently.');
     }
     
     return has;
@@ -1869,12 +1865,10 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     `Guest products:       ${localProducts.length}\n` +
     `Guest customers:      ${localCustomers.length}\n` +
     `Guest history (inv):  ${localInventoryHistory.length}\n` +
-    `Guest settings exist: ${localSettingsEdited}\n` +
     `---\n` +
     `Cloud invoices:       ${cloudInvoices.length}\n` +
     `Cloud products:       ${cloudProducts.length}\n` +
     `Cloud customers:      ${cloudCustomers.length}\n` +
-    `Cloud settings exist: ${cloudSettingsEdited}\n` +
     `---\n` +
     `Guest data exists:    ${guestDataExists}\n` +
     `Cloud data exists:    ${cloudDataExists}\n` +
