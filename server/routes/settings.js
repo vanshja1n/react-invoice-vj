@@ -39,15 +39,38 @@ router.put('/', async (req, res) => {
   try {
     const validated = settingsSchema.parse(req.body);
 
+    console.info('[Settings PUT] req.body keys:', Object.keys(req.body));
+    console.info('[Settings PUT] validated:', JSON.stringify({
+      ...validated,
+      companyLogo: validated.companyLogo ? `[base64 ${validated.companyLogo.length} chars]` : validated.companyLogo,
+    }));
+
+    const before = await Settings.findOne({ userId: req.user.id }).lean();
+    console.info('[Settings PUT] MongoDB BEFORE:', before ? JSON.stringify({
+      companyName: before.companyName,
+      companyLogo: before.companyLogo ? `[base64 ${before.companyLogo.length} chars]` : before.companyLogo,
+      gstNumber: before.gstNumber,
+      updatedAt: before.updatedAt,
+    }) : 'null (no existing document)');
+
     const settings = await Settings.findOneAndUpdate(
       { userId: req.user.id },
       { $set: { ...validated, userId: req.user.id } },
       { upsert: true, new: true, runValidators: true }
     );
 
-    res.json(settings.toObject());
+    const result = settings.toObject();
+    console.info('[Settings PUT] MongoDB AFTER:', JSON.stringify({
+      companyName: result.companyName,
+      companyLogo: result.companyLogo ? `[base64 ${result.companyLogo.length} chars]` : result.companyLogo,
+      gstNumber: result.gstNumber,
+      updatedAt: result.updatedAt,
+    }));
+
+    res.json(result);
   } catch (err) {
     if (err instanceof z.ZodError) {
+      console.error('[Settings PUT] Zod validation error:', err.errors);
       return res.status(400).json({ error: err.errors[0].message });
     }
     console.error('Update settings error:', err);

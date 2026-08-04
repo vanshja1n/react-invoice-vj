@@ -801,8 +801,9 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       return;
     }
     case 'settings:update': {
-      _log('info', 'RUNOP-SETTINGS', `settings:update.`);
-      await api.settings.update(strip(data));
+      _log('info', 'RUNOP-SETTINGS', `settings:update — sending to backend.`, strip(data));
+      const resp = await api.settings.update(strip(data));
+      _log('info', 'RUNOP-SETTINGS', `settings:update — backend response:`, resp);
       return;
     }
     default:
@@ -1164,7 +1165,32 @@ export async function pullFromCloud(opts = {}) {
     if (hasSettings) {
       const { _id, __v, userId: _suid, ...settingsRest } = data.settings;
       void _suid;
-      settingsToSave = settingsRest;
+      // CRITICAL FIX: Only use cloud settings if they are not empty
+      // If cloud has empty settings object, preserve local settings
+      const cloudHasData = Object.keys(settingsRest).some(key => {
+        const val = settingsRest[key];
+        return val !== null && val !== undefined && val !== '' && val !== 0;
+      });
+      
+      if (cloudHasData) {
+        settingsToSave = settingsRest;
+        _log('info', 'PULL-SETTINGS', 'Cloud settings received (will be applied):', JSON.stringify({
+          companyName: settingsRest.companyName,
+          companyEmail: settingsRest.companyEmail,
+          companyPhone: settingsRest.companyPhone,
+          companyAddress: settingsRest.companyAddress,
+          gstNumber: settingsRest.gstNumber,
+          defaultTax: settingsRest.defaultTax,
+          defaultCurrency: settingsRest.defaultCurrency,
+          defaultInvoiceTemplate: settingsRest.defaultInvoiceTemplate,
+          theme: settingsRest.theme,
+          companyLogo: settingsRest.companyLogo ? `[base64 ${settingsRest.companyLogo.length} chars]` : settingsRest.companyLogo,
+        }));
+      } else {
+        _log('info', 'PULL-SETTINGS', 'Cloud settings object exists but is empty — localStorage settings will NOT be overwritten.');
+      }
+    } else {
+      _log('info', 'PULL-SETTINGS', 'No settings in cloud snapshot — localStorage settings will NOT be overwritten.');
     }
 
     try {
@@ -1185,7 +1211,11 @@ export async function pullFromCloud(opts = {}) {
 
     try {
       if (settingsToSave) {
+        const localBefore = (() => { try { const r = localStorage.getItem(SETTINGS_KEY); return r ? JSON.parse(r) : null; } catch { return null; } })();
+        _log('info', 'PULL-SETTINGS', 'localStorage BEFORE restore:', JSON.stringify({ companyName: localBefore?.companyName, companyLogo: localBefore?.companyLogo ? `[${localBefore.companyLogo.length}c]` : null }));
         saveSettingsSilent(settingsToSave);
+        const localAfter = (() => { try { const r = localStorage.getItem(SETTINGS_KEY); return r ? JSON.parse(r) : null; } catch { return null; } })();
+        _log('info', 'PULL-SETTINGS', 'localStorage AFTER restore:', JSON.stringify({ companyName: localAfter?.companyName, companyLogo: localAfter?.companyLogo ? `[${localAfter.companyLogo.length}c]` : null }));
       }
     } catch (err) {
       await restoreSnapshot('failed to persist settings after successful Dexie transaction', err);
@@ -1236,13 +1266,15 @@ export async function pushLocalToCloud() {
 
 export async function clearUserDataFromIndexedDB() {
   const db = (await import('@/services/db')).default;
-  const { DEFAULT_SETTINGS, saveSettings } = await import('@/services/settings');
   await db.invoices.clear();
   await db.products.clear();
   await db.customers.clear();
   await db.inventoryHistory.clear();
-  saveSettings({ ...DEFAULT_SETTINGS });
-  _log('info', 'LOCAL-WIPE', 'clearUserDataFromIndexedDB completed (tables + settings reset).');
+  // CRITICAL FIX: Do NOT reset settings to defaults when clearing IndexedDB
+  // Settings are stored in localStorage and should persist independently
+  // They will be managed by logout/login flow and cloud sync
+  // Removed: saveSettings({ ...DEFAULT_SETTINGS });
+  _log('info', 'LOCAL-WIPE', 'clearUserDataFromIndexedDB completed (tables only, settings preserved).');
 }
 
 export async function clearWorkspaceForLogout() {
@@ -1273,7 +1305,6 @@ export async function clearWorkspaceForLogout() {
 
   try {
     const db = (await import('@/services/db')).default;
-    const { DEFAULT_SETTINGS, saveSettings } = await import('@/services/settings');
     if (db) {
       try { await db.invoices.clear(); } catch { void 0; }
       try { await db.products.clear(); } catch { void 0; }
@@ -1281,11 +1312,17 @@ export async function clearWorkspaceForLogout() {
       try { await db.inventoryHistory.clear(); } catch { void 0; }
       try { await db.syncQueue.clear(); } catch { void 0; }
     }
-    saveSettings({ ...DEFAULT_SETTINGS });
+    // CRITICAL FIX: Do NOT reset settings to defaults during logout
+    // Settings are flushed to cloud (lines 1274-1290) and should be preserved in localStorage
+    // They will be reloaded from cloud on login via pullFromCloud() if needed
+    // Removed: saveSettings({ ...DEFAULT_SETTINGS });
   } catch {
     void 0;
   }
-  try { localStorage.removeItem(SETTINGS_KEY); } catch { void 0; }
+  // CRITICAL FIX: Do NOT remove settings from localStorage during logout
+  // Settings should persist across logout/login sessions
+  // They will be refreshed from cloud on login if cloud data exists
+  // Removed: try { localStorage.removeItem(SETTINGS_KEY); } catch { void 0; }
   try { localStorage.removeItem(QUEUE_KEY); } catch { void 0; }
   try { localStorage.removeItem(SYNC_STRATEGY_KEY); } catch { void 0; }
   try { localStorage.removeItem(CLEAR_PENDING_KEY); } catch { void 0; }
