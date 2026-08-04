@@ -71,7 +71,7 @@ export function AuthProvider({ children }) {
 
     try {
       const decision = await getSyncDecision();
-      const { action, localCounts, cloudCounts, mergeRequired } = decision;
+      const { action, mergeRequired } = decision;
 
       switch (action) {
         case 'empty-workspace': {
@@ -118,8 +118,8 @@ export function AuthProvider({ children }) {
             break;
           }
           setSyncChoiceLock(true);
-          // Only case where we actually prompt the user. Pass counts to dialog via event detail.
-          dispatchDialogNeeded({ localCounts, cloudCounts });
+          // Only case where we actually prompt the user. No counts needed - simple merge choice.
+          dispatchDialogNeeded({});
           break;
         }
       }

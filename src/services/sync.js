@@ -1803,6 +1803,20 @@ export function debouncedProcessQueueFromQueueChanged(delayMs = 750) {
 /* =============================================================
  * SECTION 10: Sync Decision helper (kept, AuthContext uses via import)
  * ============================================================= */
+
+function getDecisionReason(guestDataExists, cloudDataExists) {
+  if (!guestDataExists && !cloudDataExists) {
+    return 'Both local and cloud are empty - starting fresh';
+  }
+  if (!guestDataExists && cloudDataExists) {
+    return 'Local is empty, cloud has data - loading from cloud';
+  }
+  if (guestDataExists && !cloudDataExists) {
+    return 'Cloud is empty, local has data - uploading to cloud';
+  }
+  return 'Both local and cloud have data - merge required';
+}
+
 export async function getSyncDecision(cloudPullSnapshot = null) {
   const [localInvoices, localProducts, localCustomers, localInventoryHistory] =
     await Promise.all([
@@ -1856,6 +1870,27 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     }
   })();
 
+  // Debug logging for sync decision
+  console.log('[SYNC-DECISION] Decision:', {
+    'Local data': {
+      invoices: localInvoices.length,
+      products: localProducts.length,
+      customers: localCustomers.length,
+      inventoryHistory: localInventoryHistory.length,
+      guestDataExists,
+    },
+    'Cloud data': {
+      invoices: cloudInvoices.length,
+      products: cloudProducts.length,
+      customers: cloudCustomers.length,
+      cloudDataExists,
+    },
+    'Local settings edited': 'N/A (settings sync silently)',
+    'Cloud settings edited': 'N/A (settings sync silently)',
+    'Decision': actionLabel,
+    'Reason': getDecisionReason(guestDataExists, cloudDataExists),
+  });
+
   _log(
     'info',
     'SYNC-DECISION',
@@ -1883,7 +1918,6 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     customers: localCustomers.length,
     inventoryHistory: localInventoryHistory.length,
     total: localInvoices.length + localProducts.length + localCustomers.length + localInventoryHistory.length,
-    settingsEdited: localSettingsEdited,
   };
   const cloudCounts = {
     invoices: cloudInvoices.length,
@@ -1891,7 +1925,6 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     customers: cloudCustomers.length,
     inventoryHistory: (cloud?.inventoryHistory || []).length,
     total: cloudInvoices.length + cloudProducts.length + cloudCustomers.length + (cloud?.inventoryHistory || []).length,
-    settingsEdited: cloudSettingsEdited,
   };
 
   return {
