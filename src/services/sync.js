@@ -851,7 +851,20 @@ export async function processQueue() {
     const MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    cleanedQueue = cleanedQueue.filter((item) => {
+    // For settings:update (no id field → target key "settings:__no_id__"), we must keep
+    // the LAST entry in the queue (most recent save), not the first.  Build a map of the
+    // last-seen index per target key so we can drop all earlier duplicates in the
+    // forward pass below.
+    const lastIndexPerTarget = new Map();
+    for (let _i = 0; _i < cleanedQueue.length; _i++) {
+      const _item = cleanedQueue[_i];
+      const age = now - new Date(_item.createdAt || 0).getTime();
+      if (age > MAX_AGE_MS && !_isClearOp(_item)) continue; // will be dropped below anyway
+      const _tKey = _opTargetKey(_item.entity, _item.operation, _item.data);
+      lastIndexPerTarget.set(_tKey, _i);
+    }
+
+    cleanedQueue = cleanedQueue.filter((item, _idx) => {
       const age = now - new Date(item.createdAt || 0).getTime();
       if (age > MAX_AGE_MS && _isClearOp(item) === false) {
         _log('warn', 'QUEUE-STALE-DROP', `Dropping stale op ${item.entity}:${item.operation} [${item.id}], age=${age}ms > MAX_AGE.`);
@@ -861,11 +874,25 @@ export async function processQueue() {
       if (seenTargets.has(tKey)) {
         const prev = seenTargets.get(tKey);
         if (prev.operation === item.operation && prev.entity === item.entity) {
+          // For settings:update keep the LAST occurrence (most recent settings save).
+          // For all other entities keep the FIRST occurrence (standard dedup).
+          if (item.entity === 'settings') {
+            // Drop the previously-kept entry; keep this newer one instead.
+            _log('warn', 'QUEUE-DEDUP-DROP', `Dropping earlier settings:update [${prev.id}] — keeping newer entry [${item.id}].`);
+            seenTargets.set(tKey, item);
+            // Remove prev from output by returning true here but we need to drop prev.
+            // We implement this with lastIndexPerTarget: only keep the item at the last index.
+            return _idx === lastIndexPerTarget.get(tKey);
+          }
           _log('warn', 'QUEUE-DEDUP-DROP', `Dropping duplicate queued op ${item.entity}:${item.operation} target=[${tKey}] itemId=${item.id} (prev itemId=${prev.id}).`);
           return false;
         }
       }
       seenTargets.set(tKey, item);
+      // For settings:update, only keep the item at the last recorded index.
+      if (item.entity === 'settings' && item.operation === 'update') {
+        return _idx === lastIndexPerTarget.get(tKey);
+      }
       return true;
     });
 
@@ -1062,7 +1089,7 @@ export async function pullFromCloud(opts = {}) {
     _log('info', 'PULL-SNAPSHOT', `invoices=${invCount}, products=${prodCount}, customers=${custCount}, inventoryHistory=${invHistCount}, settingsPresent=${hasSettings}.`);
 
     const db = (await import('@/services/db')).default;
-    const { saveSettings, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
+    const { saveSettings, saveSettingsSilent, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
 
     const snapshotInvoices = await db.invoices.toArray();
     const snapshotProducts = await db.products.toArray();
@@ -1158,7 +1185,7 @@ export async function pullFromCloud(opts = {}) {
 
     try {
       if (settingsToSave) {
-        saveSettings(settingsToSave);
+        saveSettingsSilent(settingsToSave);
       }
     } catch (err) {
       await restoreSnapshot('failed to persist settings after successful Dexie transaction', err);
@@ -1220,6 +1247,30 @@ export async function clearUserDataFromIndexedDB() {
 
 export async function clearWorkspaceForLogout() {
   _log('info', 'LOGOUT-WIPE', 'Logout: clearing workspace (IndexedDB tables, settings localStorage, queue localStorage, sync strategy). MongoDB data untouched.');
+
+  // Before wiping anything, flush any pending settings to the cloud so they survive logout.
+  // We do this with a direct API call (not via the queue) to guarantee the most recent
+  // settings saved by the user are persisted to MongoDB even if the sync queue was never
+  // processed (e.g. no internet during the session, or rapid save → logout).
+  if (isAuthenticated() && typeof navigator !== 'undefined' && navigator.onLine) {
+    try {
+      const { getSettings: _getSettingsForLogout, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
+      const currentSettings = _getSettingsForLogout();
+      // Only flush if the user actually edited something (don't overwrite cloud with defaults).
+      if (settingsAreUserEdited(currentSettings, _ds)) {
+        _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Flushing pending settings to cloud before workspace wipe.');
+        const { _id, __v, userId: _uid, ...settingsPayload } = currentSettings;
+        void _uid;
+        await api.settings.update(settingsPayload);
+        _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Settings flushed to cloud successfully.');
+      }
+    } catch (flushErr) {
+      // Non-fatal: if the flush fails the user's settings may not persist, but we must
+      // never block logout. Log the error and continue with the wipe.
+      _log('warn', 'LOGOUT-SETTINGS-FLUSH', 'Failed to flush settings before logout (non-fatal):', flushErr?.message || flushErr);
+    }
+  }
+
   try {
     const db = (await import('@/services/db')).default;
     const { DEFAULT_SETTINGS, saveSettings } = await import('@/services/settings');
@@ -1430,7 +1481,7 @@ export async function mergeLocalAndCloud() {
     const mergedSettings = { ...(cloud.settings || {}), ...localSettings };
 
     const db = (await import('@/services/db')).default;
-    const { saveSettings, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
+    const { saveSettings, saveSettingsSilent, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
 
     const snapshotInvoices = await db.invoices.toArray();
     const snapshotProducts = await db.products.toArray();
@@ -1487,7 +1538,7 @@ export async function mergeLocalAndCloud() {
     try {
       const { _id: _sid, __v: _sv, userId: _suid, ...settingsRest } = mergedSettings;
       void _sid; void _sv; void _suid;
-      saveSettings(settingsRest);
+      saveSettingsSilent(settingsRest);
     } catch (err) {
       await restoreSnapshot('failed to persist merged settings', err);
       throw err;

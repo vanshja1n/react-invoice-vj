@@ -95,7 +95,7 @@ async function runPushWithTransaction(session, req, now) {
     const { _id, __v, userId: _uid, ...settingsRest } = settings;
     await Settings.findOneAndUpdate(
       { userId },
-      { ...settingsRest, userId },
+      { $set: { ...settingsRest, userId } },
       { upsert: true, new: true, session }
     );
     results.settings = true;
@@ -152,7 +152,7 @@ async function runPushWithoutSession(req, now) {
     const { _id, __v, userId: _uid, ...settingsRest } = settings;
     await Settings.findOneAndUpdate(
       { userId },
-      { ...settingsRest, userId },
+      { $set: { ...settingsRest, userId } },
       { upsert: true, new: true }
     );
     results.settings = true;

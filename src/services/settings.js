@@ -51,6 +51,23 @@ export function saveSettings(settings) {
   }
 }
 
+/**
+ * Write settings to localStorage WITHOUT adding a sync queue entry.
+ * Use this when restoring settings from the cloud (pullFromCloud, mergeLocalAndCloud)
+ * so we don't re-queue data that was just downloaded — which would create a feedback
+ * loop and risk overwriting the cloud with stale/default-merged values.
+ */
+export function saveSettingsSilent(settings) {
+  try {
+    const merged = { ...DEFAULT_SETTINGS, ...settings };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    return merged;
+  } catch (e) {
+    console.error('Failed to save settings (silent):', e);
+    return settings;
+  }
+}
+
 export function getSetting(key) {
   const settings = getSettings();
   return settings[key] ?? DEFAULT_SETTINGS[key];

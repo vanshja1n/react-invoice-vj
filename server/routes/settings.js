@@ -41,7 +41,7 @@ router.put('/', async (req, res) => {
 
     const settings = await Settings.findOneAndUpdate(
       { userId: req.user.id },
-      { ...validated, userId: req.user.id },
+      { $set: { ...validated, userId: req.user.id } },
       { upsert: true, new: true, runValidators: true }
     );
 
