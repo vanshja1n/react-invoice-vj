@@ -97,8 +97,25 @@ export function saveSettingsSilent(settings) {
   try {
     const before = (() => { try { const r = localStorage.getItem(SETTINGS_KEY); return r ? JSON.parse(r) : null; } catch { return null; } })();
     
-    // CRITICAL FIX: Merge with existing settings, never overwrite valid values with empty/undefined/null
-    // This prevents cloud sync from overwriting valid local settings with empty values
+    // CRITICAL FIX: If settings parameter is provided and has valid data, use it directly
+    // Only merge if settings are incomplete or empty
+    // This ensures cloud settings take precedence when they exist
+    if (settings && typeof settings === 'object' && Object.keys(settings).length > 0) {
+      const hasValidData = Object.keys(settings).some(key => {
+        const val = settings[key];
+        return val !== null && val !== undefined && val !== '' && val !== 0;
+      });
+      
+      if (hasValidData) {
+        // Cloud/remote settings have valid data - use them directly
+        const merged = { ...DEFAULT_SETTINGS, ...settings };
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+        _logSettings('SAVE-SILENT', 'saveSettingsSilent called (no queue) - using provided settings directly. Before:', _settingsSummary(before), '→ After:', _settingsSummary(merged), '| caller:', new Error().stack?.split('\n')[2]?.trim() || 'unknown');
+        return merged;
+      }
+    }
+    
+    // Fallback: No valid settings provided, merge with existing local settings
     const merged = { ...DEFAULT_SETTINGS };
     
     // First merge existing local settings (which are authoritative if they have values)
@@ -112,19 +129,8 @@ export function saveSettingsSilent(settings) {
       }
     }
     
-    // Then merge cloud settings, but only if they have valid values
-    if (settings) {
-      for (const key of Object.keys(settings)) {
-        const cloudVal = settings[key];
-        // Only use cloud value if it's valid (not null/undefined/empty string)
-        if (cloudVal !== null && cloudVal !== undefined && cloudVal !== '') {
-          merged[key] = cloudVal;
-        }
-      }
-    }
-    
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
-    _logSettings('SAVE-SILENT', 'saveSettingsSilent called (no queue). Before:', _settingsSummary(before), '→ After:', _settingsSummary(merged), '| caller:', new Error().stack?.split('\n')[2]?.trim() || 'unknown');
+    _logSettings('SAVE-SILENT', 'saveSettingsSilent called (no queue) - using local fallback. Before:', _settingsSummary(before), '→ After:', _settingsSummary(merged), '| caller:', new Error().stack?.split('\n')[2]?.trim() || 'unknown');
     return merged;
   } catch (e) {
     console.error('Failed to save settings (silent):', e);

@@ -199,16 +199,24 @@ export async function hasLocalData() {
       getAllCustomers().catch(() => []),
       getAllInventoryHistory().catch(() => []),
     ]);
-    const { getSettings: _getS, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
-    const s = _getS();
-    const settingsEdited = settingsAreUserEdited(s, _ds);
+    
+    // CRITICAL FIX: Only count entities as local data
+    // Settings are managed separately via cloud sync and should NOT trigger sync popup
+    // The sync popup should only appear when there's actual unsynced work (invoices, products, customers, inventory)
     const hasEntities = (inv.length + prod.length + cust.length + invHist.length) > 0;
-    const has = hasEntities || settingsEdited;
+    
+    // Check for pending sync queue operations
+    const queue = getQueue();
+    const hasPendingOps = queue.length > 0;
+    
+    const has = hasEntities || hasPendingOps;
+    
     if (has) {
-      _log('info', 'LOCAL-CHECK', `Guest data found. invoices=${inv.length}, products=${prod.length}, customers=${cust.length}, invHist=${invHist.length}, settingsEdited=${settingsEdited}.`);
+      _log('info', 'LOCAL-CHECK', `Local data found. invoices=${inv.length}, products=${prod.length}, customers=${cust.length}, invHist=${invHist.length}, pendingOps=${queue.length}.`);
     } else {
-      _log('info', 'LOCAL-CHECK', 'No guest data present locally.');
+      _log('info', 'LOCAL-CHECK', 'No local data present (entities + queue). Settings will sync silently.`);
     }
+    
     return has;
   } catch {
     return false;
@@ -1515,7 +1523,35 @@ export async function mergeLocalAndCloud() {
       mergedInventory: mergedInventory.length
     });
 
-    const mergedSettings = { ...(cloud.settings || {}), ...localSettings };
+    // CRITICAL FIX: Use deep merge for settings to preserve all fields from both sources
+    // Simple spread merge { ...(cloud.settings || {}), ...localSettings } could lose data
+    const mergedSettings = (() => {
+      const cloudSettings = cloud.settings || {};
+      const local = localSettings || {};
+      const merged = { ...DEFAULT_SETTINGS };
+      
+      // First, merge cloud settings (cloud is source of truth for authenticated users)
+      for (const key of Object.keys(cloudSettings)) {
+        const cloudVal = cloudSettings[key];
+        if (cloudVal !== null && cloudVal !== undefined && cloudVal !== '') {
+          merged[key] = cloudVal;
+        }
+      }
+      
+      // Then, merge local settings only if cloud doesn't have the field or has empty value
+      for (const key of Object.keys(local)) {
+        const localVal = local[key];
+        const cloudVal = cloudSettings[key];
+        // Only use local value if cloud doesn't have it or cloud has empty value
+        if (cloudVal === null || cloudVal === undefined || cloudVal === '') {
+          if (localVal !== null && localVal !== undefined && localVal !== '') {
+            merged[key] = localVal;
+          }
+        }
+      }
+      
+      return merged;
+    })();
 
     const db = (await import('@/services/db')).default;
     const { saveSettings, saveSettingsSilent, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
@@ -1779,14 +1815,15 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
       getAllCustomers().catch(() => []),
       getAllInventoryHistory().catch(() => []),
     ]);
-  const { getSettings: _getS, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
-  const localSettings = _getS();
-  const localSettingsEdited = settingsAreUserEdited(localSettings, _ds);
+  
+  // CRITICAL FIX: Settings should NOT trigger sync popup
+  // Settings sync silently via queue and don't count as "guest data"
+  // Only actual entities (invoices, products, customers, inventory) should trigger merge decisions
   const guestDataExists =
     localInvoices.length > 0 ||
     localProducts.length > 0 ||
     localCustomers.length > 0 ||
-    localSettingsEdited;
+    localInventoryHistory.length > 0;
 
   let cloud = cloudPullSnapshot;
   if (!cloud) {
@@ -1797,18 +1834,13 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
   const cloudInvoices = (cloud?.invoices || []);
   const cloudProducts = (cloud?.products || []);
   const cloudCustomers = (cloud?.customers || []);
-  const cloudSettings = cloud?.settings || null;
-  let cloudSettingsEdited = false;
-  if (cloudSettings && typeof cloudSettings === 'object' && Object.keys(cloudSettings).length > 0) {
-    const { _id, __v, userId: _uid, ...rest } = cloudSettings;
-    void _uid;
-    cloudSettingsEdited = settingsAreUserEdited(rest, _ds);
-  }
+  
+  // CRITICAL FIX: Settings should NOT trigger sync popup
+  // Cloud settings exist check should only count entities
   const cloudDataExists =
     cloudInvoices.length > 0 ||
     cloudProducts.length > 0 ||
-    cloudCustomers.length > 0 ||
-    cloudSettingsEdited;
+    cloudCustomers.length > 0;
 
   const mergeRequired = guestDataExists && cloudDataExists;
 

@@ -136,12 +136,36 @@ export function AuthProvider({ children }) {
     if (await isSyncChoiceUnresolved()) return;
     try {
       const hasData = await hasLocalData();
-      if (hasData) return;
-      try {
-        await pullFromCloud({ force: true });
-        dispatchDataRefreshed();
-      } catch (err) {
-        if (err && err.message === 'SYNC_LOCKED') return;
+      
+      // CRITICAL FIX: Always pull from cloud if there's no local entity data
+      // Settings are handled separately and will sync in the background
+      if (!hasData) {
+        try {
+          await pullFromCloud({ force: true });
+          dispatchDataRefreshed();
+        } catch (err) {
+          if (err && err.message === 'SYNC_LOCKED') return;
+        }
+      } else {
+        // If there IS local entity data, still sync settings in background
+        // Settings should always reflect cloud data for authenticated users
+        try {
+          const { getSettings: _getS, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
+          const localSettings = _getS();
+          const localSettingsEdited = localSettings !== _ds;
+          
+          if (localSettingsEdited) {
+            // Local has edited settings - queue them for sync
+            const { queueOperation } = await import('@/services/sync');
+            queueOperation('settings', 'update', localSettings);
+          }
+          
+          // Process queue to sync settings
+          const { processQueue } = await import('@/services/sync');
+          await processQueue();
+        } catch (err) {
+          console.warn('[Auth] Background settings sync failed:', err);
+        }
       }
     } catch {
       void 0;
@@ -220,6 +244,9 @@ export function AuthProvider({ children }) {
       setPendingCount(getQueue().length);
       return;
     }
+    
+    // CRITICAL FIX: Only start sync engine if not already running
+    // This prevents duplicate sync engines
     const started = startSyncEngine(10000);
     if (started) {
       _logAuth('SINGLETON-ENGINE', 'Started singleton sync engine (interval=10s) for new auth session.');
