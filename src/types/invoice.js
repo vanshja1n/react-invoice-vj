@@ -56,6 +56,15 @@ export const CURRENCIES = [
   { value: '₿', label: 'BTC', name: 'Bitcoin' },
 ];
 
+export function toTitleCase(str) {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 // Default invoice item
 export const createDefaultItem = () => ({
   id: generateId(),

@@ -184,7 +184,7 @@ export default function SettingsPage() {
                 <Input
                   id="s-gstNumber"
                   value={form.gstNumber || ''}
-                  onChange={(e) => updateField('gstNumber', e.target.value)}
+                  onChange={(e) => updateField('gstNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
                   placeholder="e.g. 29ABCDE1234F1Z5"
                 />
               </div>

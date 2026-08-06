@@ -46,9 +46,23 @@ export function CustomerFormDialog({ open, onOpenChange, customer, onSave }) {
       return;
     }
     
+    console.log('[CUSTOMER-SAVE] Payload before save', {
+      name: formData.name,
+      email: formData.email,
+      phone: formData.phone,
+      address: formData.address,
+      gstNumber: formData.gstNumber,
+    });
+    console.log('[CUSTOMER-SAVE] Address value', { address: formData.address || '(empty)' });
+
     setSaving(true);
     try {
-      await onSave(formData);
+      const saved = await onSave(formData);
+      console.log('[CUSTOMER-SAVE] Saved customer object', {
+        id: saved?.id,
+        name: saved?.name,
+        address: saved?.address,
+      });
       onOpenChange(false);
     } catch (err) {
       console.error(err);
@@ -103,7 +117,7 @@ export function CustomerFormDialog({ open, onOpenChange, customer, onSave }) {
             <Input
               id="gstNumber"
               value={formData.gstNumber || ''}
-              onChange={(e) => handleChange('gstNumber', e.target.value)}
+              onChange={(e) => handleChange('gstNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
               placeholder="e.g. 29ABCDE1234F1Z5"
             />
           </div>

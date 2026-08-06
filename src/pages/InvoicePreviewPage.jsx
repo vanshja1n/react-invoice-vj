@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { ArrowLeft, Download, Printer, Maximize2 } from 'lucide-react';
@@ -11,6 +11,7 @@ import { prepareInvoiceForRender } from '@/services/templateService';
 
 export default function InvoicePreviewPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { id } = useParams();
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -19,34 +20,61 @@ export default function InvoicePreviewPage() {
 
   useEffect(() => {
     const load = async () => {
+      // ── Fast path: editor passed the full saved invoice via navigation state ──
+      // This avoids any IndexedDB lookup entirely and is immune to the ID-rewrite
+      // race where processQueue replaces the local integer id with a MongoDB
+      // ObjectId before Preview mounts.
+      const stateInvoice = location.state?.invoice ?? null;
+      if (stateInvoice) {
+        console.info('[PREVIEW LOAD ID] Using navigation state invoice — skipping DB lookup', {
+          routeId: id,
+          invoiceId: stateInvoice.id,
+          invoiceNumber: stateInvoice.invoiceNumber,
+        });
+        setInvoice(prepareInvoiceForRender(stateInvoice));
+        setLoading(false);
+        return;
+      }
+
+      // ── Fallback path: direct URL access, page refresh, or back-navigation ──
       setLoading(true);
       try {
-        console.info('[InvoicePreviewPage] TRACE load start', { routeId: id, routeIdType: typeof id, routeIdLength: String(id).length });
-        
-        // CRITICAL FIX: Use centralized invoice service with validation
-        const result = await loadInvoiceWithValidation(id, { 
-          trace: 'InvoicePreviewPage', 
+        console.info('[PREVIEW LOAD ID]', { routeId: id, routeIdType: typeof id });
+
+        const result = await loadInvoiceWithValidation(id, {
+          trace: 'InvoicePreviewPage',
           prepareForRender: true,
-          retries: 4 
+          retries: 4,
         });
-        
-        if (result.success) {
-          console.info('[InvoicePreviewPage] TRACE load OK', { 
-            routeId: id, 
-            resolvedId: result.invoice.id, 
-            resolvedIdType: typeof result.invoice.id, 
-            invoiceNumber: result.invoice.invoiceNumber,
-            total: result.invoice.total
+
+        // found === false  → genuinely missing → redirect to list
+        // found === true   → render even if there's an integrity warning
+        if (!result.found) {
+          console.error('[InvoicePreviewPage] TRACE load FAILED — not found', {
+            routeId: id,
+            reason: result.reason,
           });
-          setInvoice(result.invoice);
-        } else {
-          console.error('[InvoicePreviewPage] TRACE load FAILED', { 
-            routeId: id, 
-            reason: result.reason 
-          });
-          toast.error(`Invoice not found: ${result.reason}`);
+          toast.error('Invoice not found');
           navigate('/invoices');
+          return;
         }
+
+        if (!result.success) {
+          console.warn('[InvoicePreviewPage] TRACE load OK with integrity warning', {
+            routeId: id,
+            reason: result.reason,
+            invoiceNumber: result.invoice?.invoiceNumber,
+          });
+        } else {
+          console.info('[InvoicePreviewPage] TRACE load OK', {
+            routeId: id,
+            resolvedId: result.invoice.id,
+            invoiceNumber: result.invoice.invoiceNumber,
+            total: result.invoice.total,
+          });
+        }
+
+        setInvoice(result.invoice);
       } catch (e) {
         console.error('[InvoicePreviewPage] TRACE load EXCEPTION', { routeId: id, err: e?.message || String(e) });
         toast.error('Failed to load invoice');
@@ -56,7 +84,7 @@ export default function InvoicePreviewPage() {
       }
     };
     load();
-  }, [id, navigate]);
+  }, [id, location.state, navigate]);
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -110,7 +138,20 @@ export default function InvoicePreviewPage() {
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => navigate(-1)}
+            onClick={() => {
+              // Pass the current invoice back via navigation state so the
+              // editor uses it directly and skips the DB lookup entirely.
+              // This closes the window where the route param id (e.g. "7")
+              // no longer exists in IndexedDB because processQueue rewrote
+              // it to a MongoDB ObjectId while Preview was open.
+              console.log('[BACK-NAV] Returning to editor with invoice', {
+                invoiceId: invoice?.id,
+                invoiceNumber: invoice?.invoiceNumber,
+              });
+              navigate(`/invoices/${id}/edit`, {
+                state: invoice ? { invoice } : undefined,
+              });
+            }}
             aria-label="Go back"
           >
             <ArrowLeft className="h-4 w-4" />

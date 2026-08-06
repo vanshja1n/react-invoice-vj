@@ -589,6 +589,186 @@ async function _rewriteLocalRecordWithRemoteId(entityName, oldLocalId, newRemote
   }
 }
 
+/**
+ * After a product's local integer ID is rewritten to a MongoDB ObjectId, every
+ * other IndexedDB table and every pending queue operation that references the
+ * old ID must be updated in-place.  Failing to do this causes:
+ *
+ *   - inventoryHistory rows to retain a stale local integer productId → stock
+ *     tracking silently breaks after the first sync (deduct/restore looks up by
+ *     productId and finds nothing because the product now has a remote _id).
+ *
+ *   - invoice items (item.productId / item._productSnapshot.productId) to retain
+ *     the old local ID → inventory deductions on invoice status changes fail.
+ *
+ *   - pending inventory:create and invoices:create/update queue operations that
+ *     carry the old productId in their payload to push stale references to the
+ *     server, which stores them permanently in MongoDB.
+ *
+ * This function runs immediately after _rewriteLocalRecordWithRemoteId succeeds
+ * for a product entity.  It is intentionally best-effort: a failure here is
+ * logged but does NOT roll back the already-successful product remap or the
+ * cloud create that triggered it.
+ */
+async function _patchCrossEntityRefsForProductRemap(oldLocalId, newRemoteId) {
+  if (isRemoteId(oldLocalId)) return;
+  const oldStr = String(normalizeId(oldLocalId));
+
+  try {
+    const db = (await import('@/services/db')).default;
+    const now = new Date().toISOString();
+
+    // ── 1. Patch inventoryHistory rows ────────────────────────────────────
+    // productId is stored as Mixed in Mongoose / any type in Dexie.
+    // We must compare as string to handle both integer and string variants.
+    try {
+      const allInvHist = await db.inventoryHistory.toArray();
+      const toUpdate = allInvHist.filter(
+        (r) => r.productId !== undefined && r.productId !== null && String(normalizeId(r.productId)) === oldStr
+      );
+      if (toUpdate.length > 0) {
+        await db.transaction('rw', db.inventoryHistory, async () => {
+          for (const record of toUpdate) {
+            await db.inventoryHistory.update(record.id, {
+              productId: newRemoteId,
+              updatedAt: now,
+            });
+          }
+        });
+        console.info('[INVENTORY-ID-REMAP] Updated productId in inventoryHistory rows', {
+          oldProductId: oldLocalId,
+          newProductId: newRemoteId,
+          rowsUpdated: toUpdate.length,
+        });
+      } else {
+        console.info('[INVENTORY-REFERENCE-CHECK] No inventoryHistory rows reference old productId', {
+          oldProductId: oldLocalId,
+          newProductId: newRemoteId,
+        });
+      }
+    } catch (invHistErr) {
+      console.warn('[INVENTORY-ID-REMAP] Failed to patch inventoryHistory rows (non-fatal):', invHistErr?.message || String(invHistErr));
+    }
+
+    // ── 2. Patch invoice items that reference the old productId ───────────
+    // invoice.items[].productId and invoice.items[]._productSnapshot.productId
+    try {
+      const allInvoices = await db.invoices.toArray();
+      const invoicesToPatch = allInvoices.filter((inv) =>
+        Array.isArray(inv.items) &&
+        inv.items.some(
+          (item) =>
+            (item.productId !== undefined && item.productId !== null && String(normalizeId(item.productId)) === oldStr) ||
+            (item._productSnapshot?.productId !== undefined && item._productSnapshot?.productId !== null && String(normalizeId(item._productSnapshot.productId)) === oldStr)
+        )
+      );
+
+      if (invoicesToPatch.length > 0) {
+        await db.transaction('rw', db.invoices, async () => {
+          for (const inv of invoicesToPatch) {
+            const patchedItems = inv.items.map((item) => {
+              const needsPatch =
+                (item.productId !== undefined && item.productId !== null && String(normalizeId(item.productId)) === oldStr) ||
+                (item._productSnapshot?.productId !== undefined && item._productSnapshot?.productId !== null && String(normalizeId(item._productSnapshot.productId)) === oldStr);
+
+              if (!needsPatch) return item;
+
+              const patched = { ...item };
+              if (item.productId !== undefined && item.productId !== null && String(normalizeId(item.productId)) === oldStr) {
+                patched.productId = newRemoteId;
+              }
+              if (item._productSnapshot && item._productSnapshot.productId !== undefined && item._productSnapshot.productId !== null && String(normalizeId(item._productSnapshot.productId)) === oldStr) {
+                patched._productSnapshot = { ...item._productSnapshot, productId: newRemoteId };
+              }
+              return patched;
+            });
+            await db.invoices.update(inv.id, { items: patchedItems, updatedAt: now });
+          }
+        });
+        console.info('[PRODUCT-ID-REMAP] Updated productId in invoice items', {
+          oldProductId: oldLocalId,
+          newProductId: newRemoteId,
+          invoicesPatched: invoicesToPatch.length,
+        });
+      } else {
+        console.info('[PRODUCT-ID-REMAP] No invoice items reference old productId', {
+          oldProductId: oldLocalId,
+          newProductId: newRemoteId,
+        });
+      }
+    } catch (invErr) {
+      console.warn('[PRODUCT-ID-REMAP] Failed to patch invoice items (non-fatal):', invErr?.message || String(invErr));
+    }
+
+  } catch (outerErr) {
+    console.warn('[PRODUCT-ID-REMAP] Unexpected error in _patchCrossEntityRefsForProductRemap (non-fatal):', outerErr?.message || String(outerErr));
+  }
+
+  // ── 3. Patch cross-entity queue operations ────────────────────────────
+  // inventory:create ops carry productId in their data payload.
+  // invoices:create / invoices:update ops carry productId inside items[].
+  // These are in the in-memory queue array (remainingQueueSlice) and must
+  // also be patched in localStorage so retries use the correct remote ID.
+  try {
+    const q = getQueue();
+    let patched = 0;
+    const patchedQ = q.map((item) => {
+      if (_isClearOp(item)) return item;
+
+      // inventory:create — productId is a top-level field
+      if (item.entity === 'inventory' && item.operation === 'create' && item.data) {
+        const pid = item.data.productId;
+        if (pid !== undefined && pid !== null && String(normalizeId(pid)) === oldStr) {
+          patched++;
+          return { ...item, data: { ...item.data, productId: newRemoteId } };
+        }
+      }
+
+      // invoices:create / invoices:update — productId lives inside items[]
+      if (item.entity === 'invoices' && (item.operation === 'create' || item.operation === 'update') && item.data?.items) {
+        let itemPatched = false;
+        const newItems = item.data.items.map((lineItem) => {
+          const needsPatch =
+            (lineItem.productId !== undefined && lineItem.productId !== null && String(normalizeId(lineItem.productId)) === oldStr) ||
+            (lineItem._productSnapshot?.productId !== undefined && lineItem._productSnapshot?.productId !== null && String(normalizeId(lineItem._productSnapshot.productId)) === oldStr);
+          if (!needsPatch) return lineItem;
+          itemPatched = true;
+          const pl = { ...lineItem };
+          if (lineItem.productId !== undefined && lineItem.productId !== null && String(normalizeId(lineItem.productId)) === oldStr) {
+            pl.productId = newRemoteId;
+          }
+          if (lineItem._productSnapshot && lineItem._productSnapshot.productId !== undefined && lineItem._productSnapshot.productId !== null && String(normalizeId(lineItem._productSnapshot.productId)) === oldStr) {
+            pl._productSnapshot = { ...lineItem._productSnapshot, productId: newRemoteId };
+          }
+          return pl;
+        });
+        if (itemPatched) {
+          patched++;
+          return { ...item, data: { ...item.data, items: newItems } };
+        }
+      }
+
+      return item;
+    });
+
+    if (patched > 0) {
+      saveQueue(patchedQ, `cross-entity productId remap ${oldLocalId} → ${newRemoteId} (${patched} queue ops patched)`);
+      console.info('[PRODUCT-ID-REMAP] Patched cross-entity queue ops', {
+        oldProductId: oldLocalId,
+        newProductId: newRemoteId,
+        queueOpsPatchedCount: patched,
+      });
+    } else {
+      console.info('[PRODUCT-ID-REMAP] No cross-entity queue ops reference old productId', {
+        oldProductId: oldLocalId,
+        newProductId: newRemoteId,
+      });
+    }
+  } catch (qErr) {
+    console.warn('[PRODUCT-ID-REMAP] Failed to patch cross-entity queue ops (non-fatal):', qErr?.message || String(qErr));
+  }
+}
+
 function _patchRemainingQueueForRemap(entityName, oldLocalId, newRemoteId, partialQueue, fromIndex) {
   if (isRemoteId(oldLocalId)) return 0;
   const nOld = normalizeId(oldLocalId);
@@ -730,19 +910,65 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
   };
 
   const doCreateWithRemap = async (entityName, payload, createFn) => {
+    console.info(`[PRODUCT-SYNC-CREATE] Starting cloud create`, {
+      entity: entityName,
+      localId: payload?.id,
+      name: payload?.name || payload?.invoiceNumber || undefined,
+      sku: payload?.sku || undefined,
+    });
     _log('info', 'RUNOP-CREATE', `${entityName}: executing cloud create. Payload id=${payload && payload.id ? JSON.stringify(payload.id) : 'n/a'}.`);
-    const created = await createFn(strip(payload));
+    let created;
+    try {
+      created = await createFn(strip(payload));
+    } catch (createErr) {
+      console.error(`[PRODUCT-SYNC-FAILED] Cloud create failed`, {
+        entity: entityName,
+        localId: payload?.id,
+        error: createErr?.message || String(createErr),
+      });
+      throw createErr;
+    }
     const remoteId = created && created._id ? created._id : null;
     const wasDeduped = created && created.dedupedOnServer === true;
     if (remoteId) {
       const oldLocalId = payload && payload.id;
       await _rewriteLocalRecordWithRemoteId(entityName, oldLocalId, remoteId);
+
+      // For products: patch all cross-entity references (inventoryHistory rows,
+      // invoice items, and pending queue ops for inventory/invoices) that still
+      // carry the old local integer ID.  This must happen synchronously before
+      // any further queue ops are processed so referential integrity is
+      // maintained throughout the session.
+      if (entityName === 'products' && oldLocalId && !isRemoteId(oldLocalId)) {
+        console.info('[PRODUCT-ID-REMAP] Remapping product ID across all local references', {
+          oldLocalId,
+          newRemoteId: remoteId,
+          productName: payload?.name,
+          sku: payload?.sku,
+        });
+        await _patchCrossEntityRefsForProductRemap(oldLocalId, remoteId);
+        console.info('[PRODUCT-ID-REMAP] Cross-entity reference patch complete', {
+          oldLocalId,
+          newRemoteId: remoteId,
+        });
+      }
+
       if (remainingQueueSlice && typeof currentIndex === 'number') {
         _patchRemainingQueueForRemap(entityName, oldLocalId, remoteId, remainingQueueSlice, currentIndex + 1);
       }
+      console.info(`[PRODUCT-SYNC-CREATE] Cloud create succeeded`, {
+        entity: entityName,
+        oldLocalId,
+        newRemoteId: remoteId,
+        backendDedup: wasDeduped,
+      });
       _log('info', 'RUNOP-CREATE', `${entityName}: cloud create OK. remoteId=${remoteId}, backendDedup=${wasDeduped}.`);
       return { remoteId, remappedLocalId: !!oldLocalId && !isRemoteId(oldLocalId) };
     }
+    console.warn(`[PRODUCT-SYNC-FAILED] Cloud create returned no _id`, {
+      entity: entityName,
+      localId: payload?.id,
+    });
     return { remoteId, remappedLocalId: false };
   };
 
@@ -758,13 +984,41 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
         await api.invoices.update(id, strip(rest));
         return;
       }
-      const full = await getFullLocalDoc('invoices', id);
-      const payload = full ? strip(full) : strip(rest);
+      let full = await getFullLocalDoc('invoices', id);
+
+      // If the direct id lookup misses, the record may have been rewritten to
+      // a remote MongoDB ObjectId by a concurrent processQueue run (the
+      // _rewriteLocalRecordWithRemoteId path).  Try to recover the doc by
+      // invoiceNumber — which is stable and never rewritten — before falling
+      // back to the heuristic partial create that can cause duplicates.
+      if (!full && rest.invoiceNumber) {
+        try {
+          const dbMod = await import('@/services/db');
+          const recovered = await dbMod.default.invoices
+            .where('invoiceNumber')
+            .equals(rest.invoiceNumber)
+            .first();
+          if (recovered) {
+            full = recovered;
+            _log('info', 'RUNOP-UPDATE', `invoices: id=${JSON.stringify(id)} not found by id but recovered via invoiceNumber=${rest.invoiceNumber} (remoteId=${recovered.id}). Proceeding as update/create.`);
+          }
+        } catch (_e) { void _e; }
+      }
+
       if (full) {
-        await doCreateWithRemap('invoices', full, api.invoices.create);
+        // If the recovered doc already has a remote id, issue a proper update.
+        if (isRemoteId(full.id)) {
+          _log('info', 'RUNOP-UPDATE', `invoices: recovered doc has remote id=${full.id}, calling api.invoices.update.`);
+          await api.invoices.update(full.id, strip({ ...full, ...rest }));
+        } else {
+          await doCreateWithRemap('invoices', full, api.invoices.create);
+        }
       } else {
-        _log('warn', 'RUNOP-UPDATE', `invoices: local doc for id=${JSON.stringify(id)} missing. Heuristic create of partial payload. This may create a duplicate; backend dedup on invoiceNumber may catch it.`);
-        await api.invoices.create(payload);
+        // Truly no local copy — last resort: try heuristic create so the data
+        // at least reaches the cloud.  Backend dedup on invoiceNumber will
+        // prevent a duplicate if the invoice was already created there.
+        _log('warn', 'RUNOP-UPDATE', `invoices: local doc for id=${JSON.stringify(id)} missing after invoiceNumber recovery attempt. Heuristic create of partial payload. This may create a duplicate; backend dedup on invoiceNumber may catch it.`);
+        await api.invoices.create(strip(rest));
       }
       return;
     }
@@ -811,14 +1065,17 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     case 'products:update': {
       const { id, ...rest } = data || {};
       if (isRemoteId(id)) {
+        console.info('[PRODUCT-SYNC-UPDATE] Sending update to cloud', { remoteId: id });
         _log('info', 'RUNOP-UPDATE', `products: remote id=${id}, calling api.products.update.`);
         await api.products.update(id, strip(rest));
         return;
       }
       const full = await getFullLocalDoc('products', id);
       if (full) {
+        console.info('[PRODUCT-SYNC-UPDATE] Local product has no remote ID yet — promoting to create with remap', { localId: id });
         await doCreateWithRemap('products', full, api.products.create);
       } else {
+        console.warn('[PRODUCT-SYNC-FAILED] Local product doc missing for update — heuristic create', { localId: id });
         _log('warn', 'RUNOP-UPDATE', `products: local doc for id=${JSON.stringify(id)} missing — falling back to partial heuristic create.`);
         await api.products.create(strip(rest));
       }
@@ -827,11 +1084,13 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     case 'products:delete': {
       if (isRemoteId(data)) {
         try {
+          console.info('[PRODUCT-SYNC-DELETE] Deleting product from cloud', { remoteId: data });
           _log('info', 'RUNOP-DELETE', `products: remote id=${data}, calling api.products.delete.`);
           await api.products.delete(data);
           return;
         } catch (err) {
           if (err && err.status === 404) {
+            console.info('[PRODUCT-SYNC-DELETE] Product already absent on cloud (404) — treating as success', { remoteId: data });
             _log('info', 'RUNOP-DELETE', `products: remote id=${data} 404 → idempotent success.`);
             err._idempotentSuccess = true;
           }
@@ -844,18 +1103,21 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       else if (full && full._id && isRemoteId(full._id)) targetRemoteId = full._id;
       if (!targetRemoteId) targetRemoteId = await findRemoteIdForLocal('products', full);
       if (targetRemoteId) {
+        console.info('[PRODUCT-SYNC-DELETE] Resolved local ID to remote for delete', { localId: data, remoteId: targetRemoteId });
         _log('info', 'RUNOP-DELETE', `products: local id=${JSON.stringify(data)} → matched remote ${targetRemoteId}. Deleting.`);
         try {
           await api.products.delete(targetRemoteId);
           return;
         } catch (err) {
           if (err && err.status === 404) {
+            console.info('[PRODUCT-SYNC-DELETE] Product already absent on cloud (404) — idempotent success', { remoteId: targetRemoteId });
             _log('info', 'RUNOP-DELETE', `products: remote id=${targetRemoteId} 404 → idempotent success.`);
             err._idempotentSuccess = true;
           }
           throw err;
         }
       }
+      console.warn('[PRODUCT-SYNC-FAILED] Cannot determine remote ID for product delete — dropping op', { localId: data });
       _log('warn', 'RUNOP-DELETE', `products: no remote match for local id=${JSON.stringify(data)}. Dropping op.`);
       return { droppedNoRemoteMatch: true };
     }
@@ -958,15 +1220,20 @@ export async function processQueue() {
 
   if (isSyncChoiceLocked()) {
     const qLen = getQueue().length;
-    _log('info', 'QUEUE-SKIP', `processQueue skipped (sync choice unresolved). Queue=${qLen}.`);
+    _log('info', 'QUEUE-SKIP', `processQueue skipped (sync choice locked — fresh sign-in in progress). Queue=${qLen}.`);
     return qLen;
   }
-  const unresolved = await isSyncChoiceUnresolved();
-  if (unresolved) {
-    const qLen = getQueue().length;
-    _log('info', 'QUEUE-SKIP', `processQueue skipped (sync strategy unresolved, authed user has guest data). Queue=${qLen}.`);
-    return qLen;
-  }
+  // NOTE: isSyncChoiceUnresolved guard intentionally removed from processQueue.
+  // processQueue ONLY pushes local writes to the cloud — it never pulls and
+  // never overwrites local data.  Blocking it when the sync strategy is
+  // unresolved means that products (and other entities) created from the
+  // Invoice Editor silently never reach MongoDB because the queue entry sits
+  // unprocessed until pullFromCloud runs on the next login and wipes the local
+  // record that was never synced.
+  // The isSyncChoiceLocked() guard above is sufficient: it blocks during the
+  // brief fresh-sign-in window when evaluateSyncDecision() is resolving.
+  // pullFromCloud / mergeLocalAndCloud still carry their own isSyncChoiceUnresolved
+  // guards and are not affected by this change.
 
   const clearPendingTs = (() => {
     try {
@@ -1304,6 +1571,13 @@ export async function pullFromCloud(opts = {}) {
     const mappedCustomers = (data.customers || []).map(toId);
     const mappedInventory = (data.inventoryHistory || []).map(toId);
 
+    console.info('[PRODUCT-PULL] Full snapshot mapped for IndexedDB restore', {
+      productCount: mappedProducts.length,
+      invoiceCount: mappedInvoices.length,
+      customerCount: mappedCustomers.length,
+      inventoryHistoryCount: mappedInventory.length,
+    });
+
     let settingsToSave = null;
     if (hasSettings) {
       const { _id, __v, userId: _suid, ...settingsRest } = data.settings;
@@ -1365,7 +1639,17 @@ export async function pullFromCloud(opts = {}) {
       throw err;
     }
     _invalidateMetaCache();
-    _log('info', 'PULL', `COMPLETE — snapshot written (atomic transaction). inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}.`);
+    // Set the incremental-sync watermark to the exportedAt timestamp returned
+    // by the server.  This MUST be done here in pullFromCloud (full snapshot)
+    // as well as in incrementalPullFromCloud, because any code path that issues
+    // a full pull (evaluateSyncDecision, restoreCloudIfEmpty, force-pull) would
+    // otherwise leave lastSyncTs=null.  A null watermark causes the next engine
+    // tick to trigger a second redundant full pull instead of an efficient
+    // incremental one.
+    const pullSyncTs = data.exportedAt || new Date().toISOString();
+    setLastSyncTs(pullSyncTs);
+    _invalidateCloudCountsCache();
+    _log('info', 'PULL', `COMPLETE — snapshot written (atomic transaction). inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}. Watermark set to ${pullSyncTs}.`);
   } finally {
     releaseSyncLock(lockToken, 'pullFromCloud');
   }
@@ -1665,7 +1949,14 @@ export async function mergeLocalAndCloud() {
     };
 
     const invKey = (i) => i.invoiceNumber || i.id || i._id;
-    const prodKey = (p) => p.sku || p.name || p.id || p._id;
+    // Products must be merged by their stable internal identifier, NOT by sku
+    // or name.  SKUs are mutable (user can edit them on the ProductFormDialog)
+    // and names are not unique.  Using either as a merge key would cause the
+    // merge to treat a renamed/re-SKU'd product as a brand-new item, creating
+    // duplicates.  The sync push/pull pipelines already ensure local id is
+    // rewritten to the cloud _id after the first push, so id||_id is always
+    // the right stable key here.
+    const prodKey = (p) => p.id || p._id;
     const custKey = (c) => (c.email || '').toLowerCase() || (c.name || '').toLowerCase() || c.id || c._id;
     const invHistKey = (h) => `${h.productId}-${h.createdAt}-${h.action}`;
 
@@ -1974,6 +2265,14 @@ export async function incrementalPullFromCloud(opts = {}) {
     const mappedCustomers = (data.customers || []).map(toId);
     const mappedInventory = (data.inventoryHistory || []).map(toId);
 
+    console.info('[PRODUCT-PULL] Incremental snapshot mapped for IndexedDB upsert', {
+      productCount: mappedProducts.length,
+      invoiceCount: mappedInvoices.length,
+      customerCount: mappedCustomers.length,
+      inventoryHistoryCount: mappedInventory.length,
+      since: lastSyncTs,
+    });
+
     // Separate changed records from soft-deleted records
     const partitionDeleted = (records) => ({
       toUpsert: records.filter(r => !r.deletedAt),
@@ -2211,8 +2510,12 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
       // The full snapshot /sync/pull is only needed IF both sides have data
       // (and even then, callers only use counts — not the raw payload — for the
       // SyncChoiceDialog). Saves 5-8s network download on every login.
+      // bustCache=true: the login path must always see live cloud counts.
+      // A stale 60-second cache showing 0 would cause getSyncDecision to
+      // return action=empty-workspace, skipping pullFromCloud entirely and
+      // leaving IndexedDB empty even though the cloud has products.
       try {
-        cloudCounts = await getCloudDataCounts();
+        cloudCounts = await getCloudDataCounts({ bustCache: true });
         usedLightweightCloudCheck = true;
       } catch (_eCounts) {
         cloudCounts = null;

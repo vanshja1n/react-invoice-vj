@@ -6,7 +6,7 @@ export function StockBadge({ product }) {
 
   if (isOutOfStock(product)) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300">
+      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400 border border-red-200 dark:border-red-800/40">
         <AlertCircle className="h-3.5 w-3.5" />
         Out of Stock
       </span>
@@ -15,7 +15,7 @@ export function StockBadge({ product }) {
 
   if (isLowStock(product)) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-transparent dark:border-amber-800/40">
         <AlertTriangle className="h-3.5 w-3.5" />
         Low Stock
       </span>

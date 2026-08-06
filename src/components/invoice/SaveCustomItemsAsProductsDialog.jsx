@@ -24,6 +24,7 @@ export function SaveCustomItemsAsProductsDialog({
       return acc;
     }, {})
   );
+  const [saving, setSaving] = useState(false);
 
   const handleToggle = (itemId) => {
     setSelectedItems(prev => ({
@@ -32,9 +33,20 @@ export function SaveCustomItemsAsProductsDialog({
     }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const itemsToSave = customItems.filter(item => selectedItems[item.id]);
-    onSave(itemsToSave);
+    // Await onSave so every addProduct() call completes and its products:create
+    // queue entry is written to localStorage BEFORE onOpenChange(false) fires.
+    // Without the await, the dialog closes synchronously and the parent's
+    // onOpenChange handler immediately triggers navigation — unmounting the
+    // InvoiceEditorPage while addProduct() is still running, which means the
+    // queue entry may not exist yet when the sync engine's next tick runs.
+    setSaving(true);
+    try {
+      await onSave(itemsToSave);
+    } finally {
+      setSaving(false);
+    }
     onOpenChange(false);
   };
 
@@ -70,11 +82,11 @@ export function SaveCustomItemsAsProductsDialog({
           ))}
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={handleSkip}>
+          <AlertDialogCancel onClick={handleSkip} disabled={saving}>
             Keep Invoice Only
           </AlertDialogCancel>
-          <Button onClick={handleSave} disabled={!Object.values(selectedItems).some(v => v)}>
-            Save as Products
+          <Button onClick={handleSave} disabled={saving || !Object.values(selectedItems).some(v => v)}>
+            {saving ? 'Saving…' : 'Save as Products'}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

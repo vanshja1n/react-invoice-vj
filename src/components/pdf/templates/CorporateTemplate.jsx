@@ -230,7 +230,10 @@ export function CorporateTemplate({ invoice }) {
               <tr key={idx}>
                 <td style={{ ...styles.td, ...(idx % 2 === 1 ? styles.tdAlt : {}) }}>
                   <p style={styles.itemName}>{item.name}</p>
-                  {item.description && <p style={styles.itemDesc}>{item.description}</p>}
+                  {d.itemSku(item) && (
+                    <p style={{ ...styles.itemDesc, fontFamily: 'monospace', fontSize: '11px' }}>{d.itemSku(item)}</p>
+                  )}
+                  {d.itemDescription(item) && <p style={styles.itemDesc}>{d.itemDescription(item)}</p>}
                 </td>
                 <td style={{ ...styles.td, textAlign: 'center', ...(idx % 2 === 1 ? styles.tdAlt : {}) }}>{item.quantity}</td>
                 <td style={{ ...styles.td, textAlign: 'center', textTransform: 'capitalize', ...(idx % 2 === 1 ? styles.tdAlt : {}) }}>{item.unit || 'pcs'}</td>

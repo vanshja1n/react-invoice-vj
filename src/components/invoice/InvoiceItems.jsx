@@ -69,12 +69,28 @@ function SortableItem({ item, currency, onEdit, onDelete, onDuplicate }) {
               placeholder="Item name"
               className="h-8 text-sm"
             />
-            <Input
-              value={item.description}
-              onChange={(e) => onEdit(item.id, 'description', e.target.value)}
-              placeholder="Description (optional) / SKU"
-              className="h-8 text-xs text-muted-foreground"
-            />
+            {/* SKU badge — read-only, shown when the item was added from a product */}
+            {item.sku && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded font-mono leading-none">
+                  {item.sku}
+                </span>
+                <Input
+                  value={item.description}
+                  onChange={(e) => onEdit(item.id, 'description', e.target.value)}
+                  placeholder="Description (optional)"
+                  className="h-7 text-xs text-muted-foreground flex-1"
+                />
+              </div>
+            )}
+            {!item.sku && (
+              <Input
+                value={item.description}
+                onChange={(e) => onEdit(item.id, 'description', e.target.value)}
+                placeholder="Description (optional)"
+                className="h-8 text-xs text-muted-foreground"
+              />
+            )}
           </div>
 
           {/* Qty & Unit */}
@@ -193,7 +209,11 @@ export function InvoiceItems({ items, currency, onChange }) {
     const newItem = {
       id: generateId(),
       name: product.name,
-      description: product.sku ? `SKU: ${product.sku}` : '',
+      // description is intentionally left blank — it is free-form user text and
+      // must NOT be overwritten with the SKU.  The SKU is stored in its own
+      // dedicated `sku` field so PDFs and search can use it cleanly.
+      description: '',
+      sku: product.sku || '',
       quantity: 1,
       price: itemPrice,
       tax: 0,
@@ -211,6 +231,7 @@ export function InvoiceItems({ items, currency, onChange }) {
     console.log('[InvoiceItems][ADD_PRODUCT]', { 
       productId: product.id, 
       productName: product.name, 
+      productSku: product.sku,
       productPrice: product.sellingPrice, 
       newItemPrice: newItem.price,
       priceType: typeof newItem.price,
@@ -244,7 +265,14 @@ export function InvoiceItems({ items, currency, onChange }) {
     onChange(arrayMove(items, oldIndex, newIndex));
   };
 
-  const itemIds = useMemo(() => items.map((i) => i.id), [items]);
+  // Ensure every item has a stable non-null id before passing to dnd-kit.
+  // A missing id causes SortableContext to receive undefined keys, triggering
+  // the React "each child should have a unique key" warning.
+  const safeItems = useMemo(
+    () => items.map((item) => (item.id != null ? item : { ...item, id: generateId() })),
+    [items],
+  );
+  const itemIds = useMemo(() => safeItems.map((i) => i.id), [safeItems]);
 
   return (
     <>
@@ -275,7 +303,7 @@ export function InvoiceItems({ items, currency, onChange }) {
         <CardContent className="space-y-2">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
-              {items.map((item, index) => (
+              {safeItems.map((item, index) => (
                 <SortableItem
                   key={item.id}
                   item={item}

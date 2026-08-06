@@ -5,11 +5,9 @@ import {
   FileText,
   CheckCircle2,
   Clock,
-  FilePen,
   DollarSign,
   Plus,
   ArrowUpRight,
-  TrendingUp,
   Package,
   Users,
   AlertTriangle,
@@ -24,18 +22,15 @@ import { StockBadge } from '@/components/shared/StockBadge';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useProducts } from '@/hooks/useProducts';
 import { useCustomers } from '@/hooks/useCustomers';
-import { formatCurrency } from '@/types/invoice';
+import { formatCurrency, toTitleCase } from '@/types/invoice';
+import { RevenueOverviewCard } from '@/components/dashboard/RevenueOverviewCard';
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as ReTooltip,
-  ResponsiveContainer,
   PieChart,
   Pie,
   Cell,
+  Label as PieLabel,
+  Tooltip as ReTooltip,
+  ResponsiveContainer,
 } from 'recharts';
 
 const container = {
@@ -58,17 +53,15 @@ const PIE_COLORS = {
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const { invoices, loading: invLoading, stats: invStats, getMonthlyRevenue } = useInvoices();
+  const { invoices, loading: invLoading, stats: invStats } = useInvoices();
   const { stats: prodStats, getLowStock } = useProducts();
   const { customers, stats: custStats } = useCustomers();
-  
-  const [monthlyData, setMonthlyData] = useState([]);
+
   const [lowStockProducts, setLowStockProducts] = useState([]);
 
   useEffect(() => {
-    getMonthlyRevenue().then(setMonthlyData);
     getLowStock().then(setLowStockProducts);
-  }, [invoices, getMonthlyRevenue, getLowStock]);
+  }, [invoices, getLowStock]);
 
   if (invLoading) return <DashboardSkeleton />;
 
@@ -78,8 +71,8 @@ export default function DashboardPage() {
       value: formatCurrency(invStats?.totalRevenue || 0, invoices[0]?.currency || '₹'),
       subtext: `${formatCurrency(invStats?.paidRevenue || 0, invoices[0]?.currency || '₹')} collected`,
       icon: DollarSign,
-      color: 'text-violet-500',
-      bg: 'bg-violet-500/10',
+      color: 'text-violet-400',
+      bg: 'bg-violet-500/15 border border-violet-500/20 shadow-[0_0_15px_rgba(139,92,246,0.15)]',
       colSpan: 'sm:col-span-2 lg:col-span-1',
     },
     {
@@ -87,32 +80,32 @@ export default function DashboardPage() {
       value: formatCurrency(invStats?.pendingAmount || 0, invoices[0]?.currency || '₹'),
       subtext: 'From sent, pending & overdue',
       icon: Clock,
-      color: 'text-amber-500',
-      bg: 'bg-amber-500/10',
+      color: 'text-amber-400',
+      bg: 'bg-amber-500/15 border border-amber-500/20 shadow-[0_0_15px_rgba(245,158,11,0.15)]',
     },
     {
       label: 'Total Invoices',
       value: invStats?.total || 0,
       subtext: `${invStats?.paid || 0} paid, ${invStats?.overdue || 0} overdue`,
       icon: FileText,
-      color: 'text-blue-500',
-      bg: 'bg-blue-500/10',
+      color: 'text-blue-400',
+      bg: 'bg-blue-500/15 border border-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.15)]',
     },
     {
       label: 'Total Customers',
       value: custStats?.total || 0,
       subtext: 'Across all invoices',
       icon: Users,
-      color: 'text-emerald-500',
-      bg: 'bg-emerald-500/10',
+      color: 'text-emerald-400',
+      bg: 'bg-emerald-500/15 border border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.15)]',
     },
     {
       label: 'Total Products',
       value: prodStats?.total || 0,
       subtext: `${prodStats?.lowStock || 0} low stock items`,
       icon: Package,
-      color: 'text-orange-500',
-      bg: 'bg-orange-500/10',
+      color: 'text-orange-400',
+      bg: 'bg-orange-500/15 border border-orange-500/20 shadow-[0_0_15px_rgba(249,115,22,0.15)]',
     },
   ];
 
@@ -136,7 +129,7 @@ export default function DashboardPage() {
         title="Dashboard"
         description="Overview of your business activity"
       >
-        <Button onClick={() => navigate('/invoices/new')} size="sm" className="gap-1.5">
+        <Button onClick={() => navigate('/invoices/new')} size="sm" className="gap-1.5 btn-primary-interactive">
           <Plus className="h-4 w-4" /> New Invoice
         </Button>
       </PageHeader>
@@ -157,7 +150,8 @@ export default function DashboardPage() {
                       <s.icon className={`h-5 w-5 ${s.color}`} />
                     </div>
                   </div>
-                  <p className="text-[11px] text-muted-foreground font-medium">{s.subtext}</p>
+                  {/* Subtext: bumped to text-[12px] for WCAG legibility with breathing room */}
+                  <p className="text-[12px] text-muted-foreground font-medium leading-snug mt-3.5">{s.subtext}</p>
                 </CardContent>
               </Card>
             </motion.div>
@@ -166,59 +160,9 @@ export default function DashboardPage() {
 
         {/* Charts Row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Revenue Chart */}
+          {/* Revenue Overview Card — premium SaaS analytics */}
           <motion.div variants={item} className="lg:col-span-2">
-            <Card className="h-full">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold">Monthly Revenue</CardTitle>
-              </CardHeader>
-              <CardContent className="pb-4">
-                {monthlyData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={260}>
-                    <AreaChart data={monthlyData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="hsl(248 70% 60%)" stopOpacity={0.3} />
-                          <stop offset="100%" stopColor="hsl(248 70% 60%)" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fontSize: 11 }} className="text-muted-foreground" axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11 }} className="text-muted-foreground" axisLine={false} tickLine={false} />
-                      <ReTooltip
-                        contentStyle={{
-                          borderRadius: '8px',
-                          border: '1px solid hsl(var(--border))',
-                          backgroundColor: 'hsl(var(--popover))',
-                          color: 'hsl(var(--popover-foreground))',
-                          fontSize: '12px',
-                        }}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="revenue"
-                        name="Total Invoiced"
-                        stroke="hsl(248 70% 60%)"
-                        strokeWidth={2}
-                        fill="url(#revenueGrad)"
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="paid"
-                        name="Collected"
-                        stroke="hsl(142 71% 45%)"
-                        strokeWidth={2}
-                        fill="none"
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="flex items-center justify-center h-[260px] text-sm text-muted-foreground">
-                    No revenue data yet
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <RevenueOverviewCard invoices={invoices} />
           </motion.div>
 
           {/* Status Pie */}
@@ -228,48 +172,107 @@ export default function DashboardPage() {
                 <CardTitle className="text-sm font-semibold">Invoice Status</CardTitle>
               </CardHeader>
               <CardContent className="pb-4">
-                {pieData.length > 0 ? (
-                  <div className="flex flex-col items-center">
-                    <ResponsiveContainer width="100%" height={180}>
-                      <PieChart>
-                        <Pie
-                          data={pieData}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={80}
-                          paddingAngle={2}
-                          dataKey="value"
-                        >
-                          {pieData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.fill} />
-                          ))}
-                        </Pie>
-                        <ReTooltip
-                          contentStyle={{
-                            borderRadius: '8px',
-                            border: '1px solid hsl(var(--border))',
-                            backgroundColor: 'hsl(var(--popover))',
-                            color: 'hsl(var(--popover-foreground))',
-                            fontSize: '12px',
-                          }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mt-4">
-                      {pieData.map((d) => (
-                        <div key={d.name} className="flex items-center gap-1.5 text-xs">
-                          <span
-                            className="h-2.5 w-2.5 rounded-full"
-                            style={{ backgroundColor: d.fill }}
+                {pieData.length > 0 ? (() => {
+                  const totalInvoices = pieData.reduce((s, d) => s + d.value, 0);
+                  const paidCount = invStats?.paid || 0;
+                  const paidPct = totalInvoices > 0 ? Math.round((paidCount / totalInvoices) * 100) : 0;
+                  return (
+                    <div className="flex flex-col items-center">
+                      <ResponsiveContainer width="100%" height={190}>
+                        <PieChart>
+                          <Pie
+                            data={pieData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={62}
+                            outerRadius={82}
+                            paddingAngle={2}
+                            dataKey="value"
+                            strokeWidth={0}
+                          >
+                            {pieData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.fill} />
+                            ))}
+                            <PieLabel
+                              content={({ viewBox }) => {
+                                const { cx, cy } = viewBox;
+                                return (
+                                  <g>
+                                    <text
+                                      x={cx}
+                                      y={cy - 12}
+                                      textAnchor="middle"
+                                      dominantBaseline="central"
+                                      style={{
+                                        fontSize: 22,
+                                        fontWeight: 800,
+                                        fill: paidPct === 100 ? 'hsl(142 71% 52%)' : 'hsl(0 0% 96%)',
+                                        letterSpacing: '-0.02em',
+                                        fontFamily: 'inherit',
+                                      }}
+                                    >
+                                      {paidPct}%
+                                    </text>
+                                    <text
+                                      x={cx}
+                                      y={cy + 16}
+                                      textAnchor="middle"
+                                      dominantBaseline="central"
+                                      style={{
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        fill: 'hsl(var(--muted-foreground))',
+                                        letterSpacing: '0.02em',
+                                        fontFamily: 'inherit',
+                                      }}
+                                    >
+                                      {paidCount} Paid
+                                    </text>
+                                  </g>
+                                );
+                              }}
+                            />
+                          </Pie>
+                          <ReTooltip
+                            contentStyle={{
+                              borderRadius: '10px',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              backgroundColor: 'hsl(240 10% 8%)',
+                              color: 'hsl(0 0% 95%)',
+                              fontSize: '12px',
+                              boxShadow: '0 12px 32px -6px rgba(0,0,0,0.45)',
+                            }}
                           />
-                          {d.name} <span className="text-muted-foreground">({d.value})</span>
-                        </div>
-                      ))}
+                        </PieChart>
+                      </ResponsiveContainer>
+
+                      {/* Always-visible legend: Paid · Pending · Overdue with interactive hover states */}
+                      <div className="flex flex-wrap justify-center gap-x-2 gap-y-2 mt-1">
+                        {[
+                          { name: 'Paid',     fill: PIE_COLORS.paid,    count: invStats?.paid    || 0 },
+                          { name: 'Pending',  fill: PIE_COLORS.pending, count: invStats?.pending || 0 },
+                          { name: 'Overdue',  fill: PIE_COLORS.overdue, count: invStats?.overdue || 0 },
+                          ...(invStats?.sent   > 0 ? [{ name: 'Sent',      fill: PIE_COLORS.sent,    count: invStats.sent }]   : []),
+                          ...(invStats?.draft  > 0 ? [{ name: 'Draft',     fill: PIE_COLORS.draft,   count: invStats.draft }]  : []),
+                        ].map((d) => (
+                          <div
+                            key={d.name}
+                            className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-transparent hover:border-border hover:bg-muted/40 transition-all cursor-pointer select-none"
+                            style={{ opacity: d.count === 0 ? 0.35 : 1 }}
+                          >
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0 shadow-[0_0_6px_currentColor]"
+                              style={{ backgroundColor: d.fill, color: d.fill }}
+                            />
+                            <span className="font-semibold">{d.name}</span>
+                            <span className="text-muted-foreground font-mono">({d.count})</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center h-[180px] text-sm text-muted-foreground">
+                  );
+                })() : (
+                  <div className="flex items-center justify-center h-[190px] text-sm text-muted-foreground">
                     No invoices yet
                   </div>
                 )}
@@ -288,7 +291,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm font-semibold">Recent Invoices</CardTitle>
                   {invoices.length > 0 && (
-                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground" onClick={() => navigate('/invoices')}>
+                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground btn-ghost-interactive" onClick={() => navigate('/invoices')}>
                       View All <ArrowUpRight className="h-3 w-3" />
                     </Button>
                   )}
@@ -296,26 +299,26 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent className="flex-1">
                 {recentInvoices.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
                     {recentInvoices.map((inv) => (
                       <div
                         key={inv.id}
                         onClick={() => navigate(`/invoices/${inv.id}/edit`)}
-                        className="flex items-center justify-between p-2.5 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/50 cursor-pointer transition-colors"
+                        className="widget-row flex items-center justify-between p-4 rounded-xl border border-border/50 bg-muted/20 cursor-pointer"
                       >
-                        <div className="min-w-0 pr-3 flex-1">
-                          <p className="text-sm font-medium truncate">
-                            {inv.clientName || 'No client'}
+                        <div className="min-w-0 pr-3 flex-1 flex flex-col gap-1">
+                          <p className="text-sm font-semibold truncate leading-tight">
+                            {inv.clientName ? toTitleCase(inv.clientName) : 'No client'}
                           </p>
-                          <p className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                          <p className="text-xs text-muted-foreground font-mono leading-none">
                             {inv.invoiceNumber || 'Draft'}
                           </p>
                         </div>
-                        <div className="flex flex-col items-end shrink-0">
-                          <span className="text-sm font-semibold">
+                        <div className="flex flex-col items-end shrink-0 gap-1">
+                          <span className="text-sm font-bold leading-tight">
                             {formatCurrency(inv.total, inv.currency)}
                           </span>
-                          <div className="mt-1 scale-[0.85] origin-right">
+                          <div className="scale-[0.85] origin-right">
                             <StatusBadge status={inv.status} />
                           </div>
                         </div>
@@ -346,7 +349,7 @@ export default function DashboardPage() {
                     Low Stock Alerts
                   </CardTitle>
                   {lowStockProducts.length > 0 && (
-                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground" onClick={() => navigate('/products')}>
+                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground btn-ghost-interactive" onClick={() => navigate('/products')}>
                       View All <ArrowUpRight className="h-3 w-3" />
                     </Button>
                   )}
@@ -354,16 +357,16 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent className="flex-1">
                 {lowStockProducts.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
                     {lowStockProducts.slice(0, 5).map((product) => (
                       <div
                         key={product.id}
                         onClick={() => navigate('/products')}
-                        className="flex items-center justify-between p-2.5 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/50 cursor-pointer transition-colors"
+                        className="widget-row flex items-center justify-between p-4 rounded-xl border border-border/50 bg-muted/20 cursor-pointer"
                       >
-                        <div className="min-w-0 pr-3 flex-1">
-                          <p className="text-sm font-medium truncate">{product.name}</p>
-                          <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{product.sku}</p>
+                        <div className="min-w-0 pr-3 flex-1 flex flex-col gap-1">
+                          <p className="text-sm font-semibold truncate leading-tight">{toTitleCase(product.name)}</p>
+                          <p className="text-xs text-muted-foreground font-mono leading-none">{product.sku}</p>
                         </div>
                         <div className="flex flex-col items-end shrink-0">
                           <StockBadge product={product} />
@@ -393,7 +396,7 @@ export default function DashboardPage() {
                     Recent Customers
                   </CardTitle>
                   {customers.length > 0 && (
-                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground" onClick={() => navigate('/customers')}>
+                    <Button variant="ghost" size="sm" className="text-xs h-7 px-2 gap-1 -mr-2 text-muted-foreground btn-ghost-interactive" onClick={() => navigate('/customers')}>
                       View All <ArrowUpRight className="h-3 w-3" />
                     </Button>
                   )}
@@ -401,22 +404,22 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent className="flex-1">
                 {recentCustomers.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
                     {recentCustomers.map((customer) => (
                       <div
                         key={customer.id}
                         onClick={() => navigate('/customers')}
-                        className="flex items-center justify-between p-2.5 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/50 cursor-pointer transition-colors"
+                        className="widget-row flex items-center justify-between p-4 rounded-xl border border-border/50 bg-muted/20 cursor-pointer"
                       >
-                        <div className="min-w-0 pr-3 flex-1">
-                          <p className="text-sm font-medium truncate">{customer.name}</p>
-                          <p className="text-xs text-muted-foreground truncate mt-0.5">
+                        <div className="min-w-0 pr-3 flex-1 flex flex-col gap-1">
+                          <p className="text-sm font-semibold truncate leading-tight">{toTitleCase(customer.name)}</p>
+                          <p className="text-xs text-muted-foreground truncate leading-none">
                             {[customer.email, customer.phone].filter(Boolean)[0] || 'No contact'}
                           </p>
                         </div>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground shrink-0">
-                          <ArrowUpRight className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex items-center justify-center h-7 w-7 text-muted-foreground shrink-0 rounded-md transition-colors group-hover:text-foreground">
+                          <ArrowUpRight className="h-4 w-4" />
+                        </div>
                       </div>
                     ))}
                   </div>

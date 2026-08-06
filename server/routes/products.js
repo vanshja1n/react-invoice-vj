@@ -5,6 +5,29 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
 
+const SKU_PATTERN = /^PRD-(\d+)$/;
+
+/**
+ * Generate the next sequential PRD-###### SKU for a given user.
+ * Scans all existing PRD-###### SKUs for that user and returns
+ * PRD-(max+1), zero-padded to 6 digits.
+ */
+async function _generateNextSku(userId) {
+  const existing = await Product.find(
+    { userId, sku: { $regex: /^PRD-\d{6,}$/ } },
+    { sku: 1, _id: 0 },
+  ).lean();
+  let max = 0;
+  for (const p of existing) {
+    const m = String(p.sku || '').match(SKU_PATTERN);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return `PRD-${String(max + 1).padStart(6, '0')}`;
+}
+
 const baseProductSchema = z.object({
   name: z.string().optional(),
   sku: z.string().optional().nullable(),
@@ -94,8 +117,16 @@ router.post('/', async (req, res) => {
       return res.status(200).json(hit);
     }
 
+    // Auto-generate a sequential SKU if the client did not supply one.
+    // This guarantees every product in MongoDB has a proper PRD-###### SKU,
+    // even when created via direct API calls or by older client versions.
+    const sku = validated.sku && String(validated.sku).trim()
+      ? validated.sku
+      : await _generateNextSku(userId);
+
     const product = new Product({
       ...validated,
+      sku,
       userId,
       createdAt: validated.createdAt || now,
       updatedAt: now,

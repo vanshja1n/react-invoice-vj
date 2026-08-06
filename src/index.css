@@ -52,7 +52,7 @@
   --color-secondary: hsl(240 3.7% 15.9%);
   --color-secondary-foreground: hsl(0 0% 98%);
   --color-muted: hsl(240 3.7% 15.9%);
-  --color-muted-foreground: hsl(240 5% 64.9%);
+  --color-muted-foreground: hsl(240 5% 84%);
   --color-accent: hsl(240 3.7% 15.9%);
   --color-accent-foreground: hsl(0 0% 98%);
   --color-destructive: hsl(0 62.8% 30.6%);
@@ -143,4 +143,64 @@
 
 .footer-line-glow {
   animation: footerGlow 3.2s ease-in-out infinite;
+}
+
+/* ─── Dashboard Widget Row Micro-Interactions ─────────────────────────────── */
+.widget-row {
+  position: relative;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    transform 140ms ease,
+    box-shadow 180ms ease;
+  will-change: transform;
+}
+
+.widget-row:hover {
+  background-color: hsl(var(--muted) / 0.55) !important;
+  border-color: hsl(var(--border) / 0.85) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.12);
+}
+
+.widget-row:active {
+  transform: translateY(0px) scale(0.995);
+  box-shadow: none;
+  transition-duration: 60ms;
+}
+
+/* ─── Button Micro-Interactions ───────────────────────────────────────────── */
+.btn-primary-interactive {
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 120ms ease,
+    opacity 160ms ease;
+}
+
+.btn-primary-interactive:hover {
+  box-shadow: 0 4px 16px -4px rgba(99, 102, 241, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-primary-interactive:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
+  transition-duration: 60ms;
+}
+
+.btn-ghost-interactive {
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    transform 120ms ease;
+}
+
+.btn-ghost-interactive:hover {
+  transform: translateY(-1px);
+}
+
+.btn-ghost-interactive:active {
+  transform: scale(0.96);
+  transition-duration: 60ms;
 }

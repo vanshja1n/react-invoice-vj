@@ -157,20 +157,24 @@ export function AuthProvider({ children }) {
           setBackgroundSyncingSafe(false);
         }
       } else {
+        // IndexedDB already has data — drain pending queue ops first, then
+        // pull any records that changed in the cloud since our last sync.
+        // Without this pull, a returning session would only see cloud changes
+        // after the first engine tick (up to 30 s later) and products created
+        // on another device would silently be missing on startup.
         try {
-          const { getSettings: _getS, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
-          const localSettings = _getS();
-          const localSettingsEdited = localSettings !== _ds;
-          
-          if (localSettingsEdited) {
-            const { queueOperation } = await import('@/services/sync');
-            queueOperation('settings', 'update', localSettings);
-          }
-          
-          const { processQueue } = await import('@/services/sync');
+          const { processQueue, incrementalPullFromCloud } = await import('@/services/sync');
           await processQueue();
+          // Best-effort incremental pull — mirrors what the engine tick does.
+          // Failures (OFFLINE, QUEUE_NOT_DRAINED, SYNC_LOCKED) are expected and safe to ignore.
+          try {
+            await incrementalPullFromCloud({ force: false });
+          } catch (_pullErr) {
+            // OFFLINE / QUEUE_NOT_DRAINED / SYNC_LOCKED — all safe to ignore.
+            void _pullErr;
+          }
         } catch (err) {
-          console.warn('[Auth] Background settings sync failed:', err);
+          console.warn('[Auth] Background queue drain / incremental pull failed:', err);
         }
       }
     } catch {

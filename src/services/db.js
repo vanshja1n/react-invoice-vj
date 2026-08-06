@@ -116,6 +116,55 @@ db.version(4).stores({
   inventoryHistory: '++id, productId, action, reference, createdAt, updatedAt',
 });
 
+// v5 — Product SKU migration.
+// Assigns a sequential SKU (PRD-000001, PRD-000002, ...) to every product that
+// currently lacks one.  Index schema is unchanged (sku was already indexed in
+// v2+).  We only bump the schema version so Dexie runs this upgrade handler
+// exactly once per client.
+db.version(5).stores({
+  invoices: '++id, invoiceNumber, status, clientName, companyName, amount, customerId, createdAt, updatedAt, deletedAt',
+  products: '++id, name, sku, category, sellingPrice, currentStock, createdAt, updatedAt, deletedAt',
+  customers: '++id, name, phone, email, createdAt, updatedAt, deletedAt',
+  inventoryHistory: '++id, productId, action, reference, createdAt, updatedAt',
+}).upgrade(async (tx) => {
+  try {
+    const all = await tx.table('products').toArray();
+    const missing = all.filter((p) => !p?.sku || typeof p.sku !== 'string' || String(p.sku).trim() === '');
+    if (missing.length === 0) return;
+
+    // Compute max suffix already in use (scan ALL products, not just missing ones)
+    let suffix = 0;
+    const SKU_RE = /^PRD-(\d+)$/;
+    for (const p of all) {
+      if (!p?.sku) continue;
+      const m = String(p.sku).match(SKU_RE);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (Number.isFinite(n) && n > suffix) suffix = n;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updates = [];
+    for (const p of missing) {
+      suffix += 1;
+      const newSku = `PRD-${String(suffix).padStart(6, '0')}`;
+      updates.push({ id: p.id, sku: newSku, updatedAt: now });
+    }
+    for (const row of updates) {
+      await tx.table('products').update(row.id, { sku: row.sku, updatedAt: row.updatedAt });
+    }
+    console.info('[SKU-MIGRATION][v5] Dexie upgrade: assigned SKUs to products missing them', {
+      migratedCount: updates.length,
+      from: updates[0]?.sku,
+      to: updates[updates.length - 1]?.sku,
+    });
+  } catch (err) {
+    console.warn('[SKU-MIGRATION][v5] Dexie upgrade failed — runtime migration will retry on next product read:',
+                 err?.message ?? String(err));
+  }
+});
+
 export default db;
 
 // ─── Invoice CRUD ───────────────────────────────────────
@@ -338,50 +387,208 @@ export async function getInvoiceStats() {
   return stats;
 }
 
-// Get monthly revenue data for charts
+// Build revenue chart data from real invoice dates.
+// Groups by day / week / month depending on data spread,
+// fills missing buckets with zero, and returns chart-ready records.
 export async function getMonthlyRevenue() {
   const all = await getAllInvoices();
-  const months = {};
 
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date();
-    d.setMonth(d.getMonth() - i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-    months[key] = { month: label, revenue: 0, paid: 0, count: 0 };
+  // ── 1. Determine each invoice's real date ──────────────────────────────
+  // Prefer issueDate (user-entered), fall back to createdAt (record timestamp).
+  const dated = all
+    .map((inv) => {
+      const raw = inv.issueDate || inv.invoiceDate || inv.createdAt;
+      if (!raw) return null;
+      const d = new Date(raw);
+      if (isNaN(d.getTime())) return null;
+      return { inv, d };
+    })
+    .filter(Boolean);
+
+  if (dated.length === 0) return [];
+
+  // ── 2. Decide grouping based on spread ────────────────────────────────
+  const ms = dated.map((x) => x.d.getTime());
+  const minMs = Math.min(...ms);
+  const maxMs = Math.max(...ms);
+  const spanDays = Math.round((maxMs - minMs) / 86_400_000) + 1;
+
+  // daily ≤ 60 days, weekly ≤ 180 days, monthly otherwise
+  const mode = spanDays <= 60 ? 'day' : spanDays <= 180 ? 'week' : 'month';
+
+  // ── 3. Build a key for each invoice based on mode ─────────────────────
+  const toKey = (d) => {
+    if (mode === 'day') {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    if (mode === 'week') {
+      // ISO week bucket: Monday of that week
+      const day = d.getDay(); // 0=Sun
+      const monday = new Date(d);
+      monday.setDate(d.getDate() - ((day + 6) % 7));
+      return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+    }
+    // month
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  };
+
+  // ── 4. Accumulate into buckets ─────────────────────────────────────────
+  const buckets = {};
+  for (const { inv, d } of dated) {
+    const key = toKey(d);
+    if (!buckets[key]) buckets[key] = { key, revenue: 0, invoiced: 0, count: 0 };
+    const amount = parseFloat(inv.total || inv.amount || 0);
+    buckets[key].invoiced += amount;
+    buckets[key].count += 1;
+    if (inv.status === 'paid') {
+      buckets[key].revenue += amount;
+    }
   }
 
-  all.forEach((inv) => {
-    if (inv.createdAt) {
-      const d = new Date(inv.createdAt);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      if (months[key]) {
-        const amount = parseFloat(inv.total || 0);
-        // Only count PAID invoices for revenue and paid in monthly chart
-        if (inv.status === 'paid') {
-          months[key].revenue += amount;
-          months[key].paid += amount;
-        }
-        // Count all invoices for the count
-        months[key].count++;
+  // ── 5. Fill all missing buckets between min and max ───────────────────
+  const filled = {};
+  const cursor = new Date(minMs);
+  const end = new Date(maxMs);
+
+  while (cursor <= end) {
+    const key = toKey(cursor);
+    if (!filled[key]) {
+      filled[key] = buckets[key] || { key, revenue: 0, invoiced: 0, count: 0 };
+    }
+    // advance cursor by the bucket size
+    if (mode === 'day') {
+      cursor.setDate(cursor.getDate() + 1);
+    } else if (mode === 'week') {
+      cursor.setDate(cursor.getDate() + 7);
+    } else {
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+
+  // ── 6. Build display labels and sort chronologically ──────────────────
+  const sorted = Object.values(filled).sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+  );
+
+  const formatLabel = (key) => {
+    if (mode === 'day') {
+      // "Aug 6" style
+      const [y, mo, da] = key.split('-').map(Number);
+      return new Date(y, mo - 1, da).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    }
+    if (mode === 'week') {
+      // "Aug 4 – 10" style
+      const [y, mo, da] = key.split('-').map(Number);
+      const start = new Date(y, mo - 1, da);
+      const endW = new Date(start);
+      endW.setDate(start.getDate() + 6);
+      const s = start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const e = endW.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      return `${s} – ${e}`;
+    }
+    // month: "Aug '26" style
+    const [y, mo] = key.split('-').map(Number);
+    return new Date(y, mo - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+  };
+
+  return sorted.map((b) => ({
+    month: formatLabel(b.key),   // keeps backward-compat with existing dataKey="month"
+    date: b.key,                  // ISO key for tooltip
+    revenue: b.revenue,
+    paid: b.revenue,              // alias kept for existing dataKey="paid"
+    invoiced: b.invoiced,
+    count: b.count,
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PRODUCT SKU — helpers + one-time migration
+// ─────────────────────────────────────────────────────────────────
+const SKU_PATTERN = /^PRD-(\d+)$/; // PRD-000001
+let _skuMigrationRan = false;
+
+/**
+ * Scan all product SKUs for the maximum numeric suffix (PRD-###### → int).
+ * Ignores malformed / non-sequential SKUs.
+ *
+ * @returns {Promise<number>} Max integer suffix found (0 if none).
+ */
+async function _getMaxSkuSuffix() {
+  try {
+    const all = await db.products.toArray();
+    let max = 0;
+    for (const p of all) {
+      if (!p?.sku) continue;
+      const m = String(p.sku).match(SKU_PATTERN);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (Number.isFinite(n) && n > max) max = n;
       }
     }
-  });
+    return max;
+  } catch {
+    return 0;
+  }
+}
 
-  return Object.values(months);
+/**
+ * Runtime SKU migration — assign a sequential, unique PRD-###### SKU
+ * to every product that currently has no SKU (falsy or empty).
+ *
+ * Safe to call multiple times — it is idempotent within a session via the
+ * `_skuMigrationRan` guard and idempotent across sessions via the
+ * `product.sku` truthiness check.
+ */
+async function _migrateMissingSkus() {
+  if (_skuMigrationRan) return;
+  _skuMigrationRan = true;
+  try {
+    const all = await db.products.toArray();
+    const missing = all.filter((p) => !p?.sku || typeof p.sku !== 'string' || String(p.sku).trim() === '');
+    if (missing.length === 0) return;
+
+    let suffix = await _getMaxSkuSuffix();
+    const txData = [];
+    for (const p of missing) {
+      suffix = suffix + 1;
+      const newSku = `PRD-${String(suffix).padStart(6, '0')}`;
+      txData.push({ id: p.id, sku: newSku });
+    }
+
+    if (txData.length > 0) {
+      await db.transaction('rw', db.products, async () => {
+        for (const row of txData) {
+          // Also update updatedAt for incremental sync so the new SKU
+          // is pushed to the cloud on the next sync cycle.
+          await db.products.update(row.id, { sku: row.sku, updatedAt: new Date().toISOString() });
+        }
+      });
+      console.info('[SKU-MIGRATION] Assigned SKUs to products missing them', {
+        migratedCount: txData.length,
+        from: txData[0]?.sku,
+        to: txData[txData.length - 1]?.sku,
+      });
+    }
+  } catch (err) {
+    console.warn('[SKU-MIGRATION] Failed to assign missing product SKUs:', err?.message ?? String(err));
+    // Allow retry next call
+    _skuMigrationRan = false;
+  }
 }
 
 // ─── Product CRUD ───────────────────────────────────────
 
 export async function createProduct(productData) {
   const now = new Date().toISOString();
-  
-  // Auto-generate SKU if not provided
+
+  // Auto-generate SKU if not provided.
+  // Uses max numeric suffix from existing PRD-###### SKUs + 1, so it is
+  // correct regardless of whether product IDs are local autoincrement
+  // integers or cloud 24-hex MongoDB ObjectIds.
   let sku = productData.sku;
-  if (!sku) {
-    const lastProduct = await db.products.orderBy('id').reverse().first();
-    const lastNum = lastProduct ? lastProduct.id : 0;
-    sku = generateSKU(lastNum);
+  if (!sku || typeof sku !== 'string' || sku.trim() === '') {
+    const maxSuffix = await _getMaxSkuSuffix();
+    sku = generateSKU(maxSuffix);
   }
 
   const data = {
@@ -391,23 +598,24 @@ export async function createProduct(productData) {
     updatedAt: now,
   };
   if (data.id === undefined) delete data.id;
-  
+
   console.log('[DB-CREATE-PRODUCT] Starting product creation', {
     name: data.name,
     sku: data.sku,
     sellingPrice: data.sellingPrice,
-    currentStock: data.currentStock
+    currentStock: data.currentStock,
   });
-  
+
   const id = await db.products.add(data);
   const result = { ...data, id };
-  
+
   console.log('[DB-CREATE-PRODUCT] Product created successfully', {
     id,
     name: result.name,
-    sellingPrice: result.sellingPrice
+    sku: result.sku,
+    sellingPrice: result.sellingPrice,
   });
-  
+
   await _queue('products', 'create', result);
   return result;
 }
@@ -437,6 +645,10 @@ export async function getProduct(id) {
 }
 
 export async function getAllProducts() {
+  // Run the one-time SKU migration on first read each session.
+  // This is idempotent — _migrateMissingSkus bails immediately if already ran
+  // or if all products already have SKUs.
+  await _migrateMissingSkus();
   return await db.products.orderBy('createdAt').reverse().toArray();
 }
 

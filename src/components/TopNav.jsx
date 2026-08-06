@@ -124,30 +124,10 @@ export function TopNav({ onMenuClick }) {
           >
             <Menu className="h-4.5 w-4.5" />
           </Button>
-          <div className="font-semibold tracking-tight text-sm sm:text-base truncate">
-            InvoiceHub
-          </div>
         </div>
 
         <div className="flex items-center gap-1 sm:gap-1.5">
-          {isAuthenticated && (
-            <Tooltip delayDuration={0}>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 hidden sm:inline-flex"
-                  onClick={() => navigate('/invoices/new')}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span className="ml-1 text-xs">New Invoice</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent className="sm:hidden">
-                <p>Create new invoice</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
+
           {isAuthenticated && (
             <Tooltip delayDuration={0}>
               <TooltipTrigger asChild>

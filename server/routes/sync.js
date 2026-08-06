@@ -63,36 +63,40 @@ router.get('/', async (req, res) => {
       }
 
       const [invoices, products, customers, inventoryHistory, settings] = await Promise.all([
-        // Return records updated after `since` (including soft-deleted ones)
+        // Return records updated at or after `since` (including soft-deleted ones).
+        // Using $gte (not $gt) so that records whose updatedAt equals the watermark
+        // timestamp are included.  A strict $gt would silently drop any record whose
+        // updatedAt was set to exactly the value stored as lastSyncTs — the common
+        // case when the watermark is derived from exportedAt of the previous pull.
         Invoice.find({
           userId,
           $or: [
-            { updatedAt: { $gt: sinceDate } },
-            { deletedAt: { $gt: sinceDate } },
+            { updatedAt: { $gte: sinceDate } },
+            { deletedAt: { $gte: sinceDate } },
           ],
         }).sort({ updatedAt: 1 }).lean(),
 
         Product.find({
           userId,
           $or: [
-            { updatedAt: { $gt: sinceDate } },
-            { deletedAt: { $gt: sinceDate } },
+            { updatedAt: { $gte: sinceDate } },
+            { deletedAt: { $gte: sinceDate } },
           ],
         }).sort({ updatedAt: 1 }).lean(),
 
         Customer.find({
           userId,
           $or: [
-            { updatedAt: { $gt: sinceDate } },
-            { deletedAt: { $gt: sinceDate } },
+            { updatedAt: { $gte: sinceDate } },
+            { deletedAt: { $gte: sinceDate } },
           ],
         }).sort({ updatedAt: 1 }).lean(),
 
         InventoryHistory.find({
           userId,
           $or: [
-            { updatedAt: { $gt: sinceDate } },
-            { createdAt: { $gt: sinceDate } },
+            { updatedAt: { $gte: sinceDate } },
+            { createdAt: { $gte: sinceDate } },
           ],
         }).sort({ createdAt: 1 }).lean(),
 

@@ -13,13 +13,26 @@ export function ClientDetails({ data, onChange }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
 
   const handleCustomerSelect = (customer) => {
+    // Virtual customers (derived from invoice history via getAllUniqueCustomers)
+    // may not have an address field at all — only real DB customers do.
+    // Only overwrite billingAddress / shippingAddress when the customer record
+    // actually carries an address; otherwise keep whatever is already typed.
+    const hasAddress = !!(customer.address && customer.address.trim());
+    console.log('[CUSTOMER-SAVE] Payload before save', {
+      customerId: customer.id,
+      name: customer.name,
+      address: customer.address,
+      hasAddress,
+    });
     onChange({
       customerId: customer.id,
       clientName: customer.name || '',
       clientEmail: customer.email || '',
       clientPhone: customer.phone || '',
-      billingAddress: customer.address || '',
-      shippingAddress: customer.address || '', // Default shipping to same address
+      ...(hasAddress ? {
+        billingAddress: customer.address,
+        shippingAddress: customer.address,
+      } : {}),
       clientGst: customer.gstNumber || '',
     });
   };
@@ -94,7 +107,7 @@ export function ClientDetails({ data, onChange }) {
               <Input
                 id="clientGst"
                 value={data.clientGst || ''}
-                onChange={(e) => onChange({ clientGst: e.target.value })}
+                onChange={(e) => onChange({ clientGst: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })}
                 placeholder="e.g. 29ABCDE1234F1Z5"
               />
             </div>

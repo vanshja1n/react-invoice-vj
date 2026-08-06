@@ -47,7 +47,12 @@ export function ProductFormDialog({ open, onOpenChange, product, onSave }) {
     
     setSaving(true);
     try {
-      await onSave(formData);
+      // When editing, strip the SKU from the payload — it is immutable after
+      // creation and must never be overwritten by an accidental empty string.
+      const payload = isEditing
+        ? (({ sku: _sku, ...rest }) => rest)(formData)  // eslint-disable-line no-unused-vars
+        : formData;
+      await onSave(payload);
       onOpenChange(false);
     } catch (err) {
       console.error(err);
@@ -76,13 +81,30 @@ export function ProductFormDialog({ open, onOpenChange, product, onSave }) {
               />
             </div>
             <div className="space-y-2 col-span-2 sm:col-span-1">
-              <Label htmlFor="sku">SKU</Label>
-              <Input
-                id="sku"
-                value={formData.sku || ''}
-                onChange={(e) => handleChange('sku', e.target.value)}
-                placeholder="Auto-generated if empty"
-              />
+              <Label htmlFor="sku">
+                SKU
+                {isEditing && (
+                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">(assigned — cannot be changed)</span>
+                )}
+              </Label>
+              {isEditing ? (
+                // SKU is immutable after creation: display as read-only badge so it
+                // is never accidentally altered or sent as an empty string to the DB.
+                <div
+                  id="sku"
+                  className="flex h-9 items-center px-3 rounded-md border border-input bg-muted text-sm font-mono text-muted-foreground select-all cursor-default"
+                  aria-label="SKU (read only)"
+                >
+                  {formData.sku || '—'}
+                </div>
+              ) : (
+                <Input
+                  id="sku"
+                  value={formData.sku || ''}
+                  onChange={(e) => handleChange('sku', e.target.value)}
+                  placeholder="Auto-generated if empty"
+                />
+              )}
             </div>
           </div>
 

@@ -42,10 +42,14 @@ export const createDefaultProduct = () => ({
   updatedAt: new Date().toISOString(),
 });
 
-// Generate SKU
+// Generate SKU — sequential 6-digit suffix format PRD-000001.
+// Skips any suffixes already in use by scanning existing `PRD-######` SKUs.
+//
+// This is pure — the DB layer is responsible for reading existing SKUs and
+// calling this with `lastNumber = maxNumericSuffix`.
 export function generateSKU(lastNumber = 0) {
-  const next = lastNumber + 1;
-  return `PRD-${String(next).padStart(4, '0')}`;
+  const next = Math.max(1, (Number(lastNumber) || 0) + 1);
+  return `PRD-${String(next).padStart(6, '0')}`;
 }
 
 // Get unit label

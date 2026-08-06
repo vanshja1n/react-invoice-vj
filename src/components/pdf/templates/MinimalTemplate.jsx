@@ -219,7 +219,10 @@ export function MinimalTemplate({ invoice }) {
             <tr key={idx}>
               <td style={styles.td}>
                 <p style={styles.itemName}>{item.name}</p>
-                {item.description && <p style={styles.itemDesc}>{item.description}</p>}
+                {d.itemSku(item) && (
+                  <p style={{ ...styles.itemDesc, fontFamily: 'monospace', fontSize: '11px' }}>{d.itemSku(item)}</p>
+                )}
+                {d.itemDescription(item) && <p style={styles.itemDesc}>{d.itemDescription(item)}</p>}
               </td>
               <td style={{ ...styles.td, textAlign: 'center' }}>{item.quantity}</td>
               <td style={{ ...styles.td, textAlign: 'right' }}>{d.itemPrice(item)}</td>

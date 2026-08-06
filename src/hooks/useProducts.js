@@ -31,6 +31,12 @@ export function useProducts() {
   const _addBusyRef = useRef(false);
   const _updateBusyRef = useRef(new Map());
   const _removeBusyRef = useRef(new Set());
+  // Prevents concurrent / redundant refresh calls from producing duplicate
+  // IndexedDB reads and duplicate React state updates.
+  // When a refresh is already in flight any new call just returns the same
+  // promise, so multiple callers (e.g. mutation handler + data-refreshed event)
+  // always collapse into one read.
+  const _refreshPromiseRef = useRef(null);
 
   const _readData = useCallback(async () => {
     const data = await getAllProducts();
@@ -41,26 +47,42 @@ export function useProducts() {
   }, []);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      console.log('[PRODUCTS-REFRESH] Starting product refresh');
-      const { data } = await _readData();
-      console.log('[PRODUCTS-REFRESH] Product refresh completed', { 
-        productCount: data?.length || 0 
-      });
-    } catch (e) {
-      console.error('[PRODUCTS-REFRESH] Failed to load products:', e);
-    } finally {
-      setLoading(false);
+    // Deduplicate: if a refresh is already running, reuse its promise.
+    if (_refreshPromiseRef.current) {
+      console.log('[PRODUCTS-REFRESH] Skipped duplicate request');
+      return _refreshPromiseRef.current;
     }
+    console.log('[PRODUCTS-REFRESH] Started');
+    setLoading(true);
+    const promise = _readData()
+      .then((result) => {
+        console.log('[PRODUCTS-REFRESH] Completed', { productCount: result?.data?.length ?? 0 });
+        return result;
+      })
+      .catch((e) => {
+        console.error('[PRODUCTS-REFRESH] Failed to load products:', e);
+      })
+      .finally(() => {
+        _refreshPromiseRef.current = null;
+        setLoading(false);
+      });
+    _refreshPromiseRef.current = promise;
+    return promise;
   }, [_readData]);
 
   const silentRefresh = useCallback(async () => {
-    try {
-      await _readData();
-    } catch (e) {
-      console.error('Failed to load products:', e);
+    // Same deduplication — silentRefresh and refresh share the same in-flight
+    // slot so a data-refreshed event that fires while a mutation refresh is
+    // already running doesn't trigger a second read.
+    if (_refreshPromiseRef.current) {
+      console.log('[PRODUCTS-REFRESH] Skipped duplicate request (silent)');
+      return _refreshPromiseRef.current;
     }
+    const promise = _readData()
+      .catch((e) => { console.error('Failed to load products:', e); })
+      .finally(() => { _refreshPromiseRef.current = null; });
+    _refreshPromiseRef.current = promise;
+    return promise;
   }, [_readData]);
 
   useEffect(() => {
