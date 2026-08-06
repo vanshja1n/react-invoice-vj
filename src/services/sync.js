@@ -425,9 +425,21 @@ function _opTargetKey(entity, operation, data) {
   } else {
     rawId = data && typeof data === 'object' ? data.id : undefined;
   }
-  const canonicalId = (rawId === undefined || rawId === null)
-    ? '__no_id__'
+  let canonicalId = (rawId === undefined || rawId === null)
+    ? null
     : String(normalizeId(rawId));
+
+  if (!canonicalId || canonicalId === '__no_id__') {
+    if (data && typeof data === 'object') {
+      if (data.sku) canonicalId = `sku:${data.sku}`;
+      else if (data.invoiceNumber) canonicalId = `invNo:${data.invoiceNumber}`;
+      else if (data.email) canonicalId = `email:${data.email}`;
+      else if (data.name) canonicalId = `name:${data.name}`;
+      else canonicalId = '__no_id__';
+    } else {
+      canonicalId = '__no_id__';
+    }
+  }
   return `${entity}:${canonicalId}`;
 }
 
@@ -776,28 +788,64 @@ function _patchRemainingQueueForRemap(entityName, oldLocalId, newRemoteId, parti
   let patched = 0;
   for (let i = fromIndex; i < partialQueue.length; i++) {
     const item = partialQueue[i];
-    if (item.entity !== entityName) continue;
     if (_isClearOp(item)) continue;
-    const op = item.operation;
-    if (op === 'delete') {
-      const dataIdStr = String(normalizeId(item.data));
-      if (dataIdStr === oldStr) {
-        item.data = newRemoteId;
-        patched++;
+    
+    // Direct entity remap
+    if (item.entity === entityName) {
+      const op = item.operation;
+      if (op === 'delete') {
+        const dataIdStr = String(normalizeId(item.data));
+        if (dataIdStr === oldStr) {
+          item.data = newRemoteId;
+          patched++;
+        }
+      } else if (op === 'create' || op === 'update') {
+        const dataObj = item.data;
+        if (dataObj && typeof dataObj === 'object') {
+          const idStr = String(normalizeId(dataObj.id));
+          if (idStr === oldStr) {
+            dataObj.id = newRemoteId;
+            patched++;
+          }
+        }
       }
-    } else if (op === 'create' || op === 'update') {
-      const dataObj = item.data;
-      if (dataObj && typeof dataObj === 'object') {
-        const idStr = String(normalizeId(dataObj.id));
-        if (idStr === oldStr) {
-          dataObj.id = newRemoteId;
+    }
+
+    // Cross-entity product reference remap for inventory/invoices in the running queue slice
+    if (entityName === 'products') {
+      if (item.entity === 'inventory' && item.operation === 'create' && item.data) {
+        const pid = item.data.productId;
+        if (pid !== undefined && pid !== null && String(normalizeId(pid)) === oldStr) {
+          item.data = { ...item.data, productId: newRemoteId };
+          patched++;
+        }
+      }
+      if (item.entity === 'invoices' && (item.operation === 'create' || item.operation === 'update') && item.data?.items) {
+        let itemPatched = false;
+        const newItems = item.data.items.map((lineItem) => {
+          const needsPatch =
+            (lineItem.productId !== undefined && lineItem.productId !== null && String(normalizeId(lineItem.productId)) === oldStr) ||
+            (lineItem._productSnapshot?.productId !== undefined && lineItem._productSnapshot?.productId !== null && String(normalizeId(lineItem._productSnapshot.productId)) === oldStr);
+          if (!needsPatch) return lineItem;
+          itemPatched = true;
+          const pl = { ...lineItem };
+          if (lineItem.productId !== undefined && lineItem.productId !== null && String(normalizeId(lineItem.productId)) === oldStr) {
+            pl.productId = newRemoteId;
+          }
+          if (lineItem._productSnapshot && lineItem._productSnapshot.productId !== undefined && lineItem._productSnapshot.productId !== null && String(normalizeId(lineItem._productSnapshot.productId)) === oldStr) {
+            pl._productSnapshot = { ...lineItem._productSnapshot, productId: newRemoteId };
+          }
+          return pl;
+        });
+        if (itemPatched) {
+          item.data = { ...item.data, items: newItems };
           patched++;
         }
       }
     }
   }
   if (patched > 0) {
-    _log('info', 'QUEUE-ID-PATCH', `${entityName}: patched ${patched} remaining queue ops that referenced old local id ${JSON.stringify(oldLocalId)} → new remote id ${newRemoteId}.`);
+    _log('info', 'QUEUE-ID-PATCH', `${entityName}: patched ${patched} remaining in-memory queue ops referencing local id ${JSON.stringify(oldLocalId)} → remote id ${newRemoteId}.`);
   }
   return patched;
 }
@@ -819,10 +867,6 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
     const { id: _idAlias, _id, userId: _uid, __v, ...rest } = doc;
     void _idAlias; void _uid;
     
-    // Preserve all invoice item fields exactly. Only coerce truly absent
-    // values (null / undefined / empty-string) to safe numeric defaults so
-    // MongoDB never receives NaN.  A value that is already a valid number —
-    // including 0 (free / promotional items) — is passed through unchanged.
     if (rest.items && Array.isArray(rest.items)) {
       rest.items = rest.items.map(item => {
         const { price, tax, unit, ...itemRest } = item;
@@ -841,7 +885,6 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       });
     }
 
-    // Preserve both GST field names for cross-version compatibility.
     if (rest.companyGst !== undefined && !rest.gstNumber) {
       rest.gstNumber = rest.companyGst;
     }
@@ -934,11 +977,6 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       const oldLocalId = payload && payload.id;
       await _rewriteLocalRecordWithRemoteId(entityName, oldLocalId, remoteId);
 
-      // For products: patch all cross-entity references (inventoryHistory rows,
-      // invoice items, and pending queue ops for inventory/invoices) that still
-      // carry the old local integer ID.  This must happen synchronously before
-      // any further queue ops are processed so referential integrity is
-      // maintained throughout the session.
       if (entityName === 'products' && oldLocalId && !isRemoteId(oldLocalId)) {
         console.info('[PRODUCT-ID-REMAP] Remapping product ID across all local references', {
           oldLocalId,
@@ -986,11 +1024,6 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       }
       let full = await getFullLocalDoc('invoices', id);
 
-      // If the direct id lookup misses, the record may have been rewritten to
-      // a remote MongoDB ObjectId by a concurrent processQueue run (the
-      // _rewriteLocalRecordWithRemoteId path).  Try to recover the doc by
-      // invoiceNumber — which is stable and never rewritten — before falling
-      // back to the heuristic partial create that can cause duplicates.
       if (!full && rest.invoiceNumber) {
         try {
           const dbMod = await import('@/services/db');
@@ -1006,7 +1039,6 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
       }
 
       if (full) {
-        // If the recovered doc already has a remote id, issue a proper update.
         if (isRemoteId(full.id)) {
           _log('info', 'RUNOP-UPDATE', `invoices: recovered doc has remote id=${full.id}, calling api.invoices.update.`);
           await api.invoices.update(full.id, strip({ ...full, ...rest }));
@@ -1014,10 +1046,7 @@ async function runOp(entity, operation, data, { remainingQueueSlice, currentInde
           await doCreateWithRemap('invoices', full, api.invoices.create);
         }
       } else {
-        // Truly no local copy — last resort: try heuristic create so the data
-        // at least reaches the cloud.  Backend dedup on invoiceNumber will
-        // prevent a duplicate if the invoice was already created there.
-        _log('warn', 'RUNOP-UPDATE', `invoices: local doc for id=${JSON.stringify(id)} missing after invoiceNumber recovery attempt. Heuristic create of partial payload. This may create a duplicate; backend dedup on invoiceNumber may catch it.`);
+        _log('warn', 'RUNOP-UPDATE', `invoices: local doc for id=${JSON.stringify(id)} missing after invoiceNumber recovery attempt. Heuristic create of partial payload.`);
         await api.invoices.create(strip(rest));
       }
       return;
@@ -1223,17 +1252,6 @@ export async function processQueue() {
     _log('info', 'QUEUE-SKIP', `processQueue skipped (sync choice locked — fresh sign-in in progress). Queue=${qLen}.`);
     return qLen;
   }
-  // NOTE: isSyncChoiceUnresolved guard intentionally removed from processQueue.
-  // processQueue ONLY pushes local writes to the cloud — it never pulls and
-  // never overwrites local data.  Blocking it when the sync strategy is
-  // unresolved means that products (and other entities) created from the
-  // Invoice Editor silently never reach MongoDB because the queue entry sits
-  // unprocessed until pullFromCloud runs on the next login and wipes the local
-  // record that was never synced.
-  // The isSyncChoiceLocked() guard above is sufficient: it blocks during the
-  // brief fresh-sign-in window when evaluateSyncDecision() is resolving.
-  // pullFromCloud / mergeLocalAndCloud still carry their own isSyncChoiceUnresolved
-  // guards and are not affected by this change.
 
   const clearPendingTs = (() => {
     try {
@@ -1252,6 +1270,7 @@ export async function processQueue() {
 
   try {
     let rawQueue = getQueue();
+    _log('info', 'PROCESS-QUEUE-BEFORE-PROCESSING', `Raw queue length = ${rawQueue.length}`, rawQueue.map(q => `${q.entity}:${q.operation}[${q.id}]`));
     if (rawQueue.length === 0) return 0;
 
     let cleanedQueue = rawQueue.slice();
@@ -1259,15 +1278,11 @@ export async function processQueue() {
     const MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    // For settings:update (no id field → target key "settings:__no_id__"), we must keep
-    // the LAST entry in the queue (most recent save), not the first.  Build a map of the
-    // last-seen index per target key so we can drop all earlier duplicates in the
-    // forward pass below.
     const lastIndexPerTarget = new Map();
     for (let _i = 0; _i < cleanedQueue.length; _i++) {
       const _item = cleanedQueue[_i];
       const age = now - new Date(_item.createdAt || 0).getTime();
-      if (age > MAX_AGE_MS && !_isClearOp(_item)) continue; // will be dropped below anyway
+      if (age > MAX_AGE_MS && !_isClearOp(_item)) continue;
       const _tKey = _opTargetKey(_item.entity, _item.operation, _item.data);
       lastIndexPerTarget.set(_tKey, _i);
     }
@@ -1275,29 +1290,23 @@ export async function processQueue() {
     cleanedQueue = cleanedQueue.filter((item, _idx) => {
       const age = now - new Date(item.createdAt || 0).getTime();
       if (age > MAX_AGE_MS && _isClearOp(item) === false) {
-        _log('warn', 'QUEUE-STALE-DROP', `Dropping stale op ${item.entity}:${item.operation} [${item.id}], age=${age}ms > MAX_AGE.`);
+        _log('warn', 'QUEUE-STALE-DROP', `Dropping stale op ${item.entity}:${item.operation} [${item.id}], age=${age}ms > MAX_AGE. Reason: Op timestamp exceeded 24h.`);
         return false;
       }
       const tKey = _opTargetKey(item.entity, item.operation, item.data);
       if (seenTargets.has(tKey)) {
         const prev = seenTargets.get(tKey);
         if (prev.operation === item.operation && prev.entity === item.entity) {
-          // For settings:update keep the LAST occurrence (most recent settings save).
-          // For all other entities keep the FIRST occurrence (standard dedup).
           if (item.entity === 'settings') {
-            // Drop the previously-kept entry; keep this newer one instead.
-            _log('warn', 'QUEUE-DEDUP-DROP', `Dropping earlier settings:update [${prev.id}] — keeping newer entry [${item.id}].`);
+            _log('warn', 'QUEUE-DEDUP-DROP', `Dropping earlier settings:update [${prev.id}] — keeping newer entry [${item.id}]. Reason: Settings update superseded.`);
             seenTargets.set(tKey, item);
-            // Remove prev from output by returning true here but we need to drop prev.
-            // We implement this with lastIndexPerTarget: only keep the item at the last index.
             return _idx === lastIndexPerTarget.get(tKey);
           }
-          _log('warn', 'QUEUE-DEDUP-DROP', `Dropping duplicate queued op ${item.entity}:${item.operation} target=[${tKey}] itemId=${item.id} (prev itemId=${prev.id}).`);
+          _log('warn', 'QUEUE-DEDUP-DROP', `Dropping duplicate queued op ${item.entity}:${item.operation} target=[${tKey}] itemId=${item.id} (prev itemId=${prev.id}). Reason: Duplicate target key in queue.`);
           return false;
         }
       }
       seenTargets.set(tKey, item);
-      // For settings:update, only keep the item at the last recorded index.
       if (item.entity === 'settings' && item.operation === 'update') {
         return _idx === lastIndexPerTarget.get(tKey);
       }
@@ -1309,6 +1318,8 @@ export async function processQueue() {
         saveQueue(cleanedQueue, `processQueue pre-clean: dropped ${rawQueue.length - cleanedQueue.length} stale/duplicate entries.`);
       });
     }
+
+    _log('info', 'PROCESS-QUEUE-AFTER-CLEANUP', `Cleaned queue length = ${cleanedQueue.length}`, cleanedQueue.map(q => `${q.entity}:${q.operation}[${q.id}]`));
 
     let queue = cleanedQueue;
     if (queue.length === 0) {
@@ -1328,13 +1339,10 @@ export async function processQueue() {
       try {
         _log('info', 'OP-START', `[${i + 1}/${queue.length}] ${item.entity}:${item.operation} itemId=${item.id}.`);
         
-        // CRITICAL FIX: Validate data integrity before processing
         if (item.operation === 'create' || item.operation === 'update') {
           let isCorrupted = false;
           let corruptionReason = '';
           
-          // Validate invoices — only reject data that is structurally impossible.
-          // price=0 is valid (free/promotional items). quantity=0 is invalid (nothing to invoice).
           if (item.entity === 'invoices' && item.data) {
             if (item.data.items && Array.isArray(item.data.items)) {
               const zeroQtyItems = item.data.items.filter(i => {
@@ -1348,7 +1356,6 @@ export async function processQueue() {
               }
             }
 
-            // Total of 0 with items only indicates corruption when ALL items also have quantity > 0 and price > 0.
             if (!isCorrupted && item.data.total === 0 && (item.data.items || []).length > 0) {
               const hasChargeable = item.data.items.some(i => {
                 const qty = typeof i.quantity === 'string' ? parseInt(i.quantity, 10) : (i.quantity || 0);
@@ -1358,13 +1365,10 @@ export async function processQueue() {
               if (hasChargeable) {
                 isCorrupted = true;
                 corruptionReason = 'Invoice total is 0 but chargeable items exist';
-                _log('error', 'QUEUE-DATA-CORRUPTION', corruptionReason, { itemId: item.id });
               }
             }
           }
           
-          // Validate products — only flag structurally impossible data.
-          // sellingPrice=0 is valid (free product). Log it but don't block.
           if (item.entity === 'products' && item.data) {
             if (item.data.sellingPrice === 0 && item.data.name) {
               _log('info', 'QUEUE-PRODUCT-FREE', `Product "${item.data.name}" has sellingPrice=0 (free product — allowed).`, { itemId: item.id });
@@ -1374,10 +1378,8 @@ export async function processQueue() {
             }
           }
           
-          // Customers: no structural corruption checks needed — all fields optional.
-          
           if (isCorrupted) {
-            _log('error', 'QUEUE-DATA-CORRUPTION', `Skipping corrupted operation: ${corruptionReason}`, {
+            _log('error', 'QUEUE-DATA-CORRUPTION', `DROPPED corrupted operation ${item.entity}:${item.operation} [${item.id}]. Reason: ${corruptionReason}`, {
               entity: item.entity,
               operation: item.operation,
               itemId: item.id
@@ -1418,7 +1420,7 @@ export async function processQueue() {
         } else if (isClientError) {
           dropped++;
           console.error(
-            `${LOG_TAG} OP-DROP [${i + 1}/${queue.length}] Client error — permamently dropped ${item.entity}:${item.operation}:`,
+            `${LOG_TAG} OP-DROP [${i + 1}/${queue.length}] Client error (status=${status}) — permanently dropped ${item.entity}:${item.operation} [${item.id}]. Reason: ${err.message}`,
             { itemId: item.id, status, reason: err.message, data: item.data }
           );
         } else {
@@ -1427,19 +1429,33 @@ export async function processQueue() {
           console.warn(`${LOG_TAG} OP-RETRY [${i + 1}/${queue.length}] ${item.entity}:${item.operation}:`, err);
         }
       }
+      
+      _log('info', 'PROCESS-QUEUE-AFTER-OPERATION', `Completed step ${i + 1}/${queue.length}. Remaining items queued for save: ${remaining.length}`);
     }
 
+    _log('info', 'PROCESS-QUEUE-BEFORE-SAVE', `Queue before save (${remaining.length} items)`, remaining.map(q => `${q.entity}:${q.operation}[${q.id}]`));
+
+    // Synchronize latest localStorage additions (if any occurred out-of-band) with remaining items
+    const latestStorageQueue = getQueue();
+    const unhandledNewItems = latestStorageQueue.filter(
+      stItem => !cleanedQueue.some(cqItem => cqItem.id === stItem.id)
+    );
+    const finalQueueToSave = [...remaining, ...unhandledNewItems];
+
     suppressQueueEvents(() => {
-      saveQueue(remaining, `processQueue complete (processed=${processed}, retried=${retried}, dropped=${dropped})`);
+      saveQueue(finalQueueToSave, `processQueue complete (processed=${processed}, retried=${retried}, dropped=${dropped})`);
     });
-    if (remaining.length > 0 || processed > 0 || dropped > 0) {
+    
+    _log('info', 'PROCESS-QUEUE-AFTER-SAVE', `Queue after save (${finalQueueToSave.length} items)`, finalQueueToSave.map(q => `${q.entity}:${q.operation}[${q.id}]`));
+
+    if (finalQueueToSave.length > 0 || processed > 0 || dropped > 0) {
       try { window.dispatchEvent(new CustomEvent('queue-changed')); } catch { void 0; }
     }
-    _log('info', 'PROCESS-QUEUE', `COMPLETE. processed=${processed}, retried=${retried}, dropped=${dropped}, remaining=${remaining.length}.`);
+    _log('info', 'PROCESS-QUEUE', `COMPLETE. processed=${processed}, retried=${retried}, dropped=${dropped}, remaining=${finalQueueToSave.length}.`);
     if (processed > 0 || dropped > 0) {
       _invalidateMetaCache();
     }
-    return remaining.length;
+    return finalQueueToSave.length;
   } finally {
     releaseSyncLock(lockToken, 'processQueue');
   }
