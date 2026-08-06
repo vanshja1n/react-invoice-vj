@@ -21,6 +21,7 @@ import {
   stopSyncEngine,
   isSyncEngineRunning,
   debouncedProcessQueueFromQueueChanged,
+  invalidateMetadataCache,
 } from '@/services/sync';
 
 const AuthContext = createContext(null);
@@ -51,13 +52,21 @@ export function AuthProvider({ children }) {
   const [syncing, setSyncing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [backgroundSyncing, setBackgroundSyncing] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
-  const evaluateRef = useRef(null);  // {token, ts} to prevent double-evaluate same auth session
+  const evaluateRef = useRef(null);
+  const backgroundSyncActiveRef = useRef(false);
 
   const dispatchDialogNeeded = useCallback((payload) => {
     try {
       window.dispatchEvent(new CustomEvent(TRIGGER_SYNC_DIALOG_EVENT, { detail: payload || {} }));
     } catch { void 0; }
+  }, []);
+
+  const setBackgroundSyncingSafe = useCallback((val) => {
+    backgroundSyncActiveRef.current = val;
+    setBackgroundSyncing(val);
   }, []);
 
   const evaluateSyncDecision = useCallback(async () => {
@@ -83,12 +92,14 @@ export function AuthProvider({ children }) {
         case 'load-cloud': {
           setSyncStrategy('cloud');
           try {
+            setBackgroundSyncingSafe(true);
             await pullFromCloud({ force: true });
           } catch (err) {
             setSyncStrategy(null);
             console.error('[Auth] load-cloud failed — leaving guest workspace intact. Will retry next tick.', err);
             evaluateRef.current = null;
-            break;
+          } finally {
+            setBackgroundSyncingSafe(false);
           }
           setSyncChoiceLock(false);
           dispatchDataRefreshed();
@@ -97,12 +108,14 @@ export function AuthProvider({ children }) {
         case 'upload-guest': {
           setSyncStrategy('replace-cloud');
           try {
+            setBackgroundSyncingSafe(true);
             await pushLocalToCloud();
           } catch (err) {
             setSyncStrategy(null);
             console.error('[Auth] upload-guest failed — leaving guest workspace intact. Will retry next tick.', err);
             evaluateRef.current = null;
-            break;
+          } finally {
+            setBackgroundSyncingSafe(false);
           }
           setSyncChoiceLock(false);
           dispatchDataRefreshed();
@@ -111,14 +124,12 @@ export function AuthProvider({ children }) {
         case 'merge':
         default: {
           if (mergeRequired === false) {
-            // Safety: something odd happened, default to cloud source-of-truth
             setSyncStrategy('cloud');
             setSyncChoiceLock(false);
             dispatchDataRefreshed();
             break;
           }
           setSyncChoiceLock(true);
-          // Only case where we actually prompt the user. No counts needed - simple merge choice.
           dispatchDialogNeeded({});
           break;
         }
@@ -127,7 +138,7 @@ export function AuthProvider({ children }) {
       console.warn('[Auth] evaluateSyncDecision failed — will retry on next auth/online/interval event.', err);
       evaluateRef.current = null;
     }
-  }, [token, dispatchDialogNeeded]);
+  }, [token, dispatchDialogNeeded, setBackgroundSyncingSafe]);
 
   const restoreCloudIfEmpty = useCallback(async () => {
     if (!token) return;
@@ -137,30 +148,25 @@ export function AuthProvider({ children }) {
     try {
       const hasData = await hasLocalData();
       
-      // CRITICAL FIX: Always pull from cloud if there's no local entity data
-      // Settings are handled separately and will sync in the background
       if (!hasData) {
+        setBackgroundSyncingSafe(true);
         try {
           await pullFromCloud({ force: true });
           dispatchDataRefreshed();
-        } catch (err) {
-          if (err && err.message === 'SYNC_LOCKED') return;
+        } finally {
+          setBackgroundSyncingSafe(false);
         }
       } else {
-        // If there IS local entity data, still sync settings in background
-        // Settings should always reflect cloud data for authenticated users
         try {
           const { getSettings: _getS, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
           const localSettings = _getS();
           const localSettingsEdited = localSettings !== _ds;
           
           if (localSettingsEdited) {
-            // Local has edited settings - queue them for sync
             const { queueOperation } = await import('@/services/sync');
             queueOperation('settings', 'update', localSettings);
           }
           
-          // Process queue to sync settings
           const { processQueue } = await import('@/services/sync');
           await processQueue();
         } catch (err) {
@@ -170,7 +176,7 @@ export function AuthProvider({ children }) {
     } catch {
       void 0;
     }
-  }, [token]);
+  }, [token, setBackgroundSyncingSafe]);
 
   const refreshUser = useCallback(async () => {
     if (!token) return;
@@ -182,24 +188,54 @@ export function AuthProvider({ children }) {
   }, [token]);
 
   useEffect(() => {
-    if (token) {
-      refreshUser().finally(async () => {
-        if (getSyncStrategy()) {
+    if (!token) {
+      stopSyncEngine();
+      return;
+    }
+
+    // PARALLEL STARTUP: refreshUser and queue length are independent — no dependency.
+    // refreshUser runs silently in the background; it does not block UI.
+    refreshUser().catch(() => {});
+    setPendingCount(getQueue().length);
+
+    const strat = getSyncStrategy();
+
+    if (strat) {
+      // Existing session — strategy already known. Sync decision already resolved.
+      // Kick off restoreCloudIfEmpty and queue-drain entirely in the background,
+      // do NOT await them before the app is usable.
+      (async () => {
+        try {
+          setBackgroundSyncingSafe(true);
+          // PARALLELIZE: restoreCloudIfEmpty (hasLocalData + pullFromCloud) and
+          // processQueue are independent operations once strategy is set.
+          // However: processQueue must drain non-clear ops BEFORE pullFromCloud
+          // to avoid wiping uncommitted local writes. They must be sequential
+          // inside restoreCloudIfEmpty which handles this correctly.
           await restoreCloudIfEmpty();
           if (!isSyncChoiceLocked() && !(await isSyncChoiceUnresolved())) {
             const pending = await processQueue().catch(() => getQueue().length);
             setPendingCount(pending);
-          } else {
-            setPendingCount(getQueue().length);
           }
-          // If strategy already set from prior session, skip evaluateSyncDecision entirely.
-          return;
+        } finally {
+          setBackgroundSyncingSafe(false);
         }
-        // No strategy set: this is a new sign-in. Let evaluateSyncDecision run the full table.
-        setSyncChoiceLock(true);
-        await evaluateSyncDecision();
-      });
+      })();
+      // Skip evaluateSyncDecision entirely — strategy already set from prior session.
+      return;
     }
+
+    // No strategy set: this is a new sign-in. Show UI immediately, then
+    // evaluate sync decision + initial sync in the background.
+    setSyncChoiceLock(true);
+    (async () => {
+      try {
+        setBackgroundSyncingSafe(true);
+        await evaluateSyncDecision();
+      } finally {
+        setBackgroundSyncingSafe(false);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -211,14 +247,28 @@ export function AuthProvider({ children }) {
         const locked = isSyncChoiceLocked() || await isSyncChoiceUnresolved();
         if (locked) {
           if (!getSyncStrategy()) {
-            await evaluateSyncDecision();
+            (async () => {
+              try {
+                setBackgroundSyncingSafe(true);
+                await evaluateSyncDecision();
+              } finally {
+                setBackgroundSyncingSafe(false);
+              }
+            })();
           }
           setPendingCount(getQueue().length);
           return;
         }
         const count = await processQueue();
         if (typeof count === 'number') setPendingCount(count);
-        await restoreCloudIfEmpty();
+        (async () => {
+          try {
+            setBackgroundSyncingSafe(true);
+            await restoreCloudIfEmpty();
+          } finally {
+            setBackgroundSyncingSafe(false);
+          }
+        })();
         if (!isSyncEngineRunning()) {
           startSyncEngine(10000);
         }
@@ -233,7 +283,7 @@ export function AuthProvider({ children }) {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [token, restoreCloudIfEmpty, evaluateSyncDecision]);
+  }, [token, restoreCloudIfEmpty, evaluateSyncDecision, setBackgroundSyncingSafe]);
 
   useEffect(() => {
     if (!token) {
@@ -245,8 +295,6 @@ export function AuthProvider({ children }) {
       return;
     }
     
-    // CRITICAL FIX: Only start sync engine if not already running
-    // This prevents duplicate sync engines
     const started = startSyncEngine(10000);
     if (started) {
       _logAuth('SINGLETON-ENGINE', 'Started singleton sync engine (interval=10s) for new auth session.');
@@ -270,8 +318,8 @@ export function AuthProvider({ children }) {
     localStorage.setItem(USER_KEY, JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
-    // Clear evaluate cache so effect below re-evaluates decision with new token
     evaluateRef.current = null;
+    invalidateMetadataCache();
   }, []);
 
   const clearAuth = useCallback(() => {
@@ -280,6 +328,7 @@ export function AuthProvider({ children }) {
     setToken(null);
     setUser(null);
     evaluateRef.current = null;
+    invalidateMetadataCache();
   }, []);
 
   const prepareBeforeAuth = useCallback(async () => {
@@ -294,8 +343,13 @@ export function AuthProvider({ children }) {
   const signup = useCallback(async (email, password, name) => {
     setLoading(true);
     try {
+      // NOTE: prepareBeforeAuth() does IndexedDB reads — they're quick but we
+      // still run them before the API call because we need the result for the
+      // sync dialog logic. If they become slow we can parallelize with the API.
       await prepareBeforeAuth();
       const result = await api.auth.signup({ email, password, name });
+      // UI flips to authenticated immediately via persistAuth — we don't wait
+      // for sync or any cloud operation.
       persistAuth(result.token, result.user);
       return { user: result.user };
     } finally {
@@ -328,21 +382,50 @@ export function AuthProvider({ children }) {
   }, [persistAuth, prepareBeforeAuth]);
 
   const logout = useCallback(async () => {
-    setLoading(true);
-    try {
-      if (token) {
-        await api.auth.logout().catch(() => {});
-      }
-      await clearWorkspaceForLogout();
-    } finally {
-      clearAuth();
+    // INSTANT UX: Show "Signing out..." overlay right away.
+    setSigningOut(true);
+
+    // Stop the sync engine FIRST so no background ticks fire during wipe.
+    try { stopSyncEngine(); } catch { void 0; }
+
+    // Clear frontend auth state IMMEDIATELY — UI flips to signed-out view
+    // without waiting for the API or workspace wipe.
+    clearAuth();
+
+    // Remaining work (API call, workspace wipe) is run WITHOUT blocking the UI.
+    // We keep `signingOut` briefly but don't hold the UI beyond a timeout.
+    const LOGOUT_UI_TIMEOUT_MS = 500;
+
+    const finalizeUi = () => {
       setLoading(false);
+      setSigningOut(false);
+      setBackgroundSyncingSafe(false);
       dispatchDataRefreshed(50);
-    }
-  }, [token, clearAuth]);
+    };
+
+    // UI timeout: after 500ms, unblock the overlay even if backend work lingers.
+    const uiTimeoutHandle = setTimeout(finalizeUi, LOGOUT_UI_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        // Best-effort server-side logout. No timeout because we've already
+        // unblocked the UI via LOGOUT_UI_TIMEOUT_MS.
+        if (token) {
+          try { await api.auth.logout(); } catch { void 0; }
+        }
+        // Clear workspace (IndexedDB tables, localStorage keys, sync state).
+        // This internally runs settings flush with 3s timeout + parallel clears.
+        await clearWorkspaceForLogout();
+      } finally {
+        clearTimeout(uiTimeoutHandle);
+        finalizeUi();
+      }
+    })();
+  }, [token, clearAuth, setBackgroundSyncingSafe]);
 
   const handleSyncChoice = useCallback(async (choice) => {
     setSyncing(true);
+    setBackgroundSyncingSafe(true);
     try {
       switch (choice) {
         case 'merge':
@@ -361,8 +444,6 @@ export function AuthProvider({ children }) {
           try {
             await pullFromCloud({ force: true });
             try { await clearUserDataFromIndexedDB(); } catch (_e) { void _e; }
-            // Only re-apply settings to Dexie if clearUserDataFromIndexedDB wiped them.
-            // No need to do full network pullFromCloud again; data already fresh in IndexedDB.
             dispatchDataRefreshed();
           } catch (err) {
             console.error('[Auth] cloud choice failed during atomic pull — leaving guest workspace intact.');
@@ -380,31 +461,39 @@ export function AuthProvider({ children }) {
       throw err;
     } finally {
       setSyncing(false);
+      setBackgroundSyncingSafe(false);
     }
-  }, []);
+  }, [setBackgroundSyncingSafe]);
 
   useEffect(() => {
     if (!token) return;
     if (loading) return;
     if (syncing) return;
-    // When authentication settles and strategy is still missing, re-evaluate.
-    // This catches: sign-in success, F5 after sign-in (while token persists but strategy wasn't saved due to network error last round, etc.)
+    if (backgroundSyncActiveRef.current) return;
     const strat = getSyncStrategy();
     if (!strat) {
       (async () => {
         const hdata = await hasLocalData();
         if (!hdata && typeof navigator !== 'undefined' && navigator.onLine) {
-          // Probably a returning sign-in with empty guest workspace. Short-circuit evaluate now.
-          await evaluateSyncDecision();
+          try {
+            setBackgroundSyncingSafe(true);
+            await evaluateSyncDecision();
+          } finally {
+            setBackgroundSyncingSafe(false);
+          }
         } else if (hdata) {
-          // Has unmerged guest data — re-evaluate so if user closed dialog without choosing we can still open if needed.
-          await evaluateSyncDecision();
+          try {
+            setBackgroundSyncingSafe(true);
+            await evaluateSyncDecision();
+          } finally {
+            setBackgroundSyncingSafe(false);
+          }
         } else {
           void 0;
         }
       })();
     }
-  }, [token, loading, syncing, evaluateSyncDecision]);
+  }, [token, loading, syncing, evaluateSyncDecision, setBackgroundSyncingSafe]);
 
   const value = useMemo(() => ({
     user,
@@ -414,6 +503,8 @@ export function AuthProvider({ children }) {
     syncing,
     isOnline,
     pendingCount,
+    backgroundSyncing,
+    signingOut,
     signup,
     login,
     loginWithGoogle,
@@ -426,7 +517,7 @@ export function AuthProvider({ children }) {
       setSyncChoiceLock(false);
     },
   }), [
-    user, token, loading, syncing, isOnline, pendingCount,
+    user, token, loading, syncing, isOnline, pendingCount, backgroundSyncing, signingOut,
     signup, login, loginWithGoogle, logout, refreshUser, handleSyncChoice,
   ]);
 

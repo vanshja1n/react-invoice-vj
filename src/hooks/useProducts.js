@@ -69,11 +69,8 @@ export function useProducts() {
 
   useEffect(() => {
     const handler = () => silentRefresh();
-    const handlerInv = () => silentRefresh();
-    window.addEventListener('inventory-updated', handlerInv);
     window.addEventListener('data-refreshed', handler);
     return () => {
-      window.removeEventListener('inventory-updated', handlerInv);
       window.removeEventListener('data-refreshed', handler);
     };
   }, [silentRefresh]);

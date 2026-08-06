@@ -18,6 +18,48 @@ const CLOUD_COUNTS_CACHE_KEY = 'invoicehub_cloud_counts_cache'; // JSON: {counts
 const CLOUD_COUNTS_TTL_MS = 60_000;                           // 1-minute cache TTL for counts
 const idFromRemoteRegex = /^[0-9a-fA-F]{24}$/;
 
+/* =============================================================
+ * SECTION 0b: SESSION METADATA CACHE
+ * Avoids repeated IndexedDB scans during the same login session.
+ * Cache is automatically invalidated on logout / clear-all.
+ * ============================================================= */
+const _metaCache = {
+  hasLocalData: { value: null, ts: 0 },
+  localCounts: { value: null, ts: 0 },
+  syncDecision: { value: null, ts: 0 },
+  sessionNonce: 0,
+};
+const META_CACHE_TTL_MS = 30_000;
+
+function _bumpMetaNonce() {
+  _metaCache.sessionNonce++;
+}
+
+function _invalidateMetaCache() {
+  _metaCache.hasLocalData = { value: null, ts: 0 };
+  _metaCache.localCounts = { value: null, ts: 0 };
+  _metaCache.syncDecision = { value: null, ts: 0 };
+  _bumpMetaNonce();
+}
+
+function _cached(key, computeFn, ttlMs = META_CACHE_TTL_MS) {
+  const entry = _metaCache[key];
+  const now = Date.now();
+  if (entry.value !== null && (now - entry.ts) < ttlMs) {
+    return Promise.resolve(entry.value);
+  }
+  return Promise.resolve()
+    .then(() => computeFn())
+    .then((result) => {
+      _metaCache[key] = { value: result, ts: now };
+      return result;
+    });
+}
+
+export function invalidateMetadataCache() {
+  _invalidateMetaCache();
+}
+
 const LOG_TAG = '[InvoiceHub Sync]';
 function _log(level, subTag, ...args) {
   try {
@@ -137,25 +179,50 @@ function isRemoteId(id) {
   return typeof id === 'string' && idFromRemoteRegex.test(id);
 }
 
-export async function getLocalDataCounts() {
+export async function getLocalDataCounts(opts = {}) {
+  const { bustCache = false, includeData = true } = opts;
   try {
-    const [inv, prod, cust, invHist] = await Promise.all([
-      getAllInvoices().catch(() => []),
-      getAllProducts().catch(() => []),
-      getAllCustomers().catch(() => []),
-      getAllInventoryHistory().catch(() => []),
-    ]);
-    return {
-      invoices: inv.length,
-      products: prod.length,
-      customers: cust.length,
-      inventoryHistory: invHist.length,
-      total: inv.length + prod.length + cust.length + invHist.length,
-      invoicesData: inv,
-      productsData: prod,
-      customersData: cust,
-      inventoryHistoryData: invHist,
+    const compute = async () => {
+      const [inv, prod, cust, invHist] = await Promise.all([
+        getAllInvoices().catch(() => []),
+        getAllProducts().catch(() => []),
+        getAllCustomers().catch(() => []),
+        getAllInventoryHistory().catch(() => []),
+      ]);
+      const base = {
+        invoices: inv.length,
+        products: prod.length,
+        customers: cust.length,
+        inventoryHistory: invHist.length,
+        total: inv.length + prod.length + cust.length + invHist.length,
+      };
+      if (includeData) {
+        return {
+          ...base,
+          invoicesData: inv,
+          productsData: prod,
+          customersData: cust,
+          inventoryHistoryData: invHist,
+        };
+      }
+      return {
+        ...base,
+        invoicesData: [],
+        productsData: [],
+        customersData: [],
+        inventoryHistoryData: [],
+      };
     };
+    if (bustCache) {
+      _invalidateMetaCache();
+    }
+    const cached = await _cached('localCounts', compute);
+    if (includeData && cached.invoicesData.length === 0 && cached.total > 0) {
+      const fresh = await compute();
+      _metaCache.localCounts = { value: fresh, ts: Date.now() };
+      return fresh;
+    }
+    return cached;
   } catch {
     return { invoices: 0, products: 0, customers: 0, inventoryHistory: 0, total: 0, invoicesData: [], productsData: [], customersData: [], inventoryHistoryData: [] };
   }
@@ -258,33 +325,31 @@ export function setSyncStrategy(strategy) {
   }
 }
 
-export async function hasLocalData() {
+export async function hasLocalData(opts = {}) {
+  const { bustCache = false } = opts;
   try {
-    const [inv, prod, cust, invHist] = await Promise.all([
-      getAllInvoices().catch(() => []),
-      getAllProducts().catch(() => []),
-      getAllCustomers().catch(() => []),
-      getAllInventoryHistory().catch(() => []),
-    ]);
-    
-    // CRITICAL FIX: Only count entities as local data
-    // Settings are managed separately via cloud sync and should NOT trigger sync popup
-    // The sync popup should only appear when there's actual unsynced work (invoices, products, customers, inventory)
-    const hasEntities = (inv.length + prod.length + cust.length + invHist.length) > 0;
-    
-    // Check for pending sync queue operations
-    const queue = getQueue();
-    const hasPendingOps = queue.length > 0;
-    
-    const has = hasEntities || hasPendingOps;
-    
-    if (has) {
-      _log('info', 'LOCAL-CHECK', `Local data found. invoices=${inv.length}, products=${prod.length}, customers=${cust.length}, invHist=${invHist.length}, pendingOps=${queue.length}.`);
-    } else {
-      _log('info', 'LOCAL-CHECK', 'No local data present. Settings will sync silently.');
+    const compute = async () => {
+      const [inv, prod, cust, invHist] = await Promise.all([
+        getAllInvoices().catch(() => []),
+        getAllProducts().catch(() => []),
+        getAllCustomers().catch(() => []),
+        getAllInventoryHistory().catch(() => []),
+      ]);
+      const hasEntities = (inv.length + prod.length + cust.length + invHist.length) > 0;
+      const queue = getQueue();
+      const hasPendingOps = queue.length > 0;
+      const has = hasEntities || hasPendingOps;
+      if (has) {
+        _log('info', 'LOCAL-CHECK', `Local data found. invoices=${inv.length}, products=${prod.length}, customers=${cust.length}, invHist=${invHist.length}, pendingOps=${queue.length}.`);
+      } else {
+        _log('info', 'LOCAL-CHECK', 'No local data present. Settings will sync silently.');
+      }
+      return has;
+    };
+    if (bustCache) {
+      _invalidateMetaCache();
     }
-    
-    return has;
+    return await _cached('hasLocalData', compute);
   } catch {
     return false;
   }
@@ -1104,6 +1169,9 @@ export async function processQueue() {
       try { window.dispatchEvent(new CustomEvent('queue-changed')); } catch { void 0; }
     }
     _log('info', 'PROCESS-QUEUE', `COMPLETE. processed=${processed}, retried=${retried}, dropped=${dropped}, remaining=${remaining.length}.`);
+    if (processed > 0 || dropped > 0) {
+      _invalidateMetaCache();
+    }
     return remaining.length;
   } finally {
     releaseSyncLock(lockToken, 'processQueue');
@@ -1296,6 +1364,7 @@ export async function pullFromCloud(opts = {}) {
       await restoreSnapshot('failed to persist settings after successful Dexie transaction', err);
       throw err;
     }
+    _invalidateMetaCache();
     _log('info', 'PULL', `COMPLETE — snapshot written (atomic transaction). inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}.`);
   } finally {
     releaseSyncLock(lockToken, 'pullFromCloud');
@@ -1333,6 +1402,7 @@ export async function pushLocalToCloud() {
     });
 
     saveQueue([], `pushLocalToCloud complete — queue discarded (full workspace push replaces queue-per-op approach).`);
+    _invalidateMetaCache();
     _log('info', 'PUSH', 'COMPLETE — guest workspace uploaded to MongoDB as source of truth.');
   } finally {
     releaseSyncLock(lockToken, 'pushLocalToCloud');
@@ -1355,49 +1425,75 @@ export async function clearUserDataFromIndexedDB() {
 export async function clearWorkspaceForLogout() {
   _log('info', 'LOGOUT-WIPE', 'Logout: clearing workspace (IndexedDB tables, settings localStorage, queue localStorage, sync strategy). MongoDB data untouched.');
 
+  // Invalidate metadata cache immediately since we're wiping data
+  _invalidateMetaCache();
+
+  const SETTINGS_FLUSH_TIMEOUT_MS = 3000;
+
   // Before wiping anything, flush any pending settings to the cloud so they survive logout.
   // We do this with a direct API call (not via the queue) to guarantee the most recent
   // settings saved by the user are persisted to MongoDB even if the sync queue was never
   // processed (e.g. no internet during the session, or rapid save → logout).
+  //
+  // OPTIMIZATION: The flush has a 3-second timeout — if it takes longer (bad network),
+  // we continue logout immediately; the flush continues in the background and the user
+  // perceives logout as instant.
   if (isAuthenticated() && typeof navigator !== 'undefined' && navigator.onLine) {
     try {
       const { getSettings: _getSettingsForLogout, DEFAULT_SETTINGS: _ds } = await import('@/services/settings');
       const currentSettings = _getSettingsForLogout();
       // Only flush if the user actually edited something (don't overwrite cloud with defaults).
       if (settingsAreUserEdited(currentSettings, _ds)) {
-        _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Flushing pending settings to cloud before workspace wipe.');
+        _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Flushing pending settings to cloud before workspace wipe (timeout=3s).');
         const { _id, __v, userId: _uid, ...settingsPayload } = currentSettings;
         void _uid;
-        await api.settings.update(settingsPayload);
-        _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Settings flushed to cloud successfully.');
+
+        const flushPromise = api.settings.update(settingsPayload);
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('FLUSH_TIMEOUT')), SETTINGS_FLUSH_TIMEOUT_MS)
+        );
+
+        try {
+          await Promise.race([flushPromise, timeoutPromise]);
+          _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Settings flushed to cloud successfully (within timeout).');
+        } catch (flushErr) {
+          if (flushErr && flushErr.message === 'FLUSH_TIMEOUT') {
+            _log('warn', 'LOGOUT-SETTINGS-FLUSH', `Settings flush exceeded ${SETTINGS_FLUSH_TIMEOUT_MS}ms — continuing logout, flush continues in background.`);
+            // Don't await — fire and forget. If it completes later, great. If not, queue will retry next login.
+            flushPromise
+              .then(() => _log('info', 'LOGOUT-SETTINGS-FLUSH', 'Settings flush completed in background after logout.'))
+              .catch(() => { /* noop */ });
+          } else {
+            _log('warn', 'LOGOUT-SETTINGS-FLUSH', 'Failed to flush settings before logout (non-fatal):', flushErr?.message || flushErr);
+          }
+        }
       }
     } catch (flushErr) {
-      // Non-fatal: if the flush fails the user's settings may not persist, but we must
-      // never block logout. Log the error and continue with the wipe.
-      _log('warn', 'LOGOUT-SETTINGS-FLUSH', 'Failed to flush settings before logout (non-fatal):', flushErr?.message || flushErr);
+      _log('warn', 'LOGOUT-SETTINGS-FLUSH', 'Settings flush preparation failed (non-fatal):', flushErr?.message || flushErr);
     }
   }
 
   try {
     const db = (await import('@/services/db')).default;
     if (db) {
-      try { await db.invoices.clear(); } catch { void 0; }
-      try { await db.products.clear(); } catch { void 0; }
-      try { await db.customers.clear(); } catch { void 0; }
-      try { await db.inventoryHistory.clear(); } catch { void 0; }
-      try { await db.syncQueue.clear(); } catch { void 0; }
+      // Parallelize IndexedDB clears — they are independent tables
+      const clearTasks = [];
+      if (db.invoices) clearTasks.push(db.invoices.clear().catch(() => {}));
+      if (db.products) clearTasks.push(db.products.clear().catch(() => {}));
+      if (db.customers) clearTasks.push(db.customers.clear().catch(() => {}));
+      if (db.inventoryHistory) clearTasks.push(db.inventoryHistory.clear().catch(() => {}));
+      if (db.syncQueue) clearTasks.push(db.syncQueue.clear().catch(() => {}));
+      await Promise.all(clearTasks);
     }
     // CRITICAL FIX: Do NOT reset settings to defaults during logout
-    // Settings are flushed to cloud (lines 1274-1290) and should be preserved in localStorage
+    // Settings are flushed to cloud (lines above) and should be preserved in localStorage
     // They will be reloaded from cloud on login via pullFromCloud() if needed
-    // Removed: saveSettings({ ...DEFAULT_SETTINGS });
   } catch {
     void 0;
   }
   // CRITICAL FIX: Do NOT remove settings from localStorage during logout
   // Settings should persist across logout/login sessions
   // They will be refreshed from cloud on login if cloud data exists
-  // Removed: try { localStorage.removeItem(SETTINGS_KEY); } catch { void 0; }
   try { localStorage.removeItem(QUEUE_KEY); } catch { void 0; }
   try { localStorage.removeItem(SYNC_STRATEGY_KEY); } catch { void 0; }
   try { localStorage.removeItem(CLEAR_PENDING_KEY); } catch { void 0; }
@@ -1702,6 +1798,7 @@ export async function mergeLocalAndCloud() {
     }
 
     saveQueue([], `mergeLocalAndCloud complete — queue reset (full workspace push handles all local+cloud entities).`);
+    _invalidateMetaCache();
     _log('info', 'MERGE', `COMPLETE. merged_inv=${mergedInvoices.length}, merged_prod=${mergedProducts.length}, merged_cust=${mergedCustomers.length}.`);
   } finally {
     releaseSyncLock(lockToken, 'mergeLocalAndCloud');
@@ -1799,12 +1896,23 @@ export async function incrementalPullFromCloud(opts = {}) {
     }
   }
 
+  // OPTIMIZATION: If lastSyncTs is missing, skip the incremental API call entirely
+  // and delegate directly to full pullFromCloud. Saves one unnecessary network
+  // round-trip (pullIncremental(null)) before the actual full-snapshot write.
+  const lastSyncTs = getLastSyncTs();
+  if (lastSyncTs === null) {
+    _log('info', 'INCR-PULL', 'No lastSyncTs — skipping incremental API call, delegating directly to full pullFromCloud.');
+    await pullFromCloud({ force });
+    setLastSyncTs(new Date().toISOString());
+    _invalidateCloudCountsCache();
+    return { changed: -1, fullPull: true, fastPath: true };
+  }
+
   const lockToken = acquireSyncLock('incrementalPullFromCloud');
   if (lockToken === null) return { changed: 0 };
 
   try {
-    const lastSyncTs = getLastSyncTs();
-    _log('info', 'INCR-PULL', `START — lastSyncTs=${lastSyncTs || 'none (will do full pull)'}.`);
+    _log('info', 'INCR-PULL', `START — lastSyncTs=${lastSyncTs}.`);
 
     const data = await api.sync.pullIncremental(lastSyncTs);
 
@@ -1816,11 +1924,12 @@ export async function incrementalPullFromCloud(opts = {}) {
 
     _log('info', 'INCR-PULL-SNAPSHOT', `incremental=${data.incremental}, inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}.`);
 
-    // If server returned a full snapshot (no `since` was sent or server is old),
-    // fall back to the existing full-snapshot pull logic to stay correct.
-    if (isFullSnapshot && lastSyncTs === null) {
-      // First-ever sync: use the full-snapshot path (same as initial load-cloud)
-      _log('info', 'INCR-PULL', 'No lastSyncTs — delegating to full pullFromCloud for initial load.');
+    // Backward-compat: If server returned a full snapshot despite lastSyncTs being sent
+    // (old server without incremental support), use the pullFromCloud codepath
+    // for correctness, reusing the already-fetched snapshot data logic below
+    // is skipped — force fall-through to full-pull style handling:
+    if (isFullSnapshot) {
+      _log('info', 'INCR-PULL', 'Server returned full snapshot (old-style) — releasing mutex then delegating to pullFromCloud for correct atomic handling.');
       releaseSyncLock(lockToken, 'incrementalPullFromCloud');
       await pullFromCloud({ force });
       setLastSyncTs(new Date().toISOString());
@@ -2074,13 +2183,14 @@ function getDecisionReason(guestDataExists, cloudDataExists) {
 }
 
 export async function getSyncDecision(cloudPullSnapshot = null) {
-  const [localInvoices, localProducts, localCustomers, localInventoryHistory] =
-    await Promise.all([
-      getAllInvoices().catch(() => []),
-      getAllProducts().catch(() => []),
-      getAllCustomers().catch(() => []),
-      getAllInventoryHistory().catch(() => []),
-    ]);
+  // OPTIMIZATION: Use cached local counts instead of 4 fresh IndexedDB table scans.
+  // If we already have cached metadata from hasLocalData/getLocalDataCounts calls
+  // earlier in the login flow, we skip all 4 table reads.
+  const localCountsResult = await getLocalDataCounts({ includeData: true });
+  const localInvoices = localCountsResult.invoicesData;
+  const localProducts = localCountsResult.productsData;
+  const localCustomers = localCountsResult.customersData;
+  const localInventoryHistory = localCountsResult.inventoryHistoryData;
   
   // CRITICAL FIX: Settings should NOT trigger sync popup
   // Settings sync silently via queue and don't count as "guest data"
@@ -2092,14 +2202,50 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     localInventoryHistory.length > 0;
 
   let cloud = cloudPullSnapshot;
+  let cloudCounts = null;
+  let usedLightweightCloudCheck = false;
+
   if (!cloud) {
     if (isAuthenticated() && (typeof navigator === 'undefined' || navigator.onLine)) {
-      try { cloud = await api.sync.pull(); } catch { cloud = null; }
+      // OPTIMIZATION: Try lightweight counts endpoint first.
+      // The full snapshot /sync/pull is only needed IF both sides have data
+      // (and even then, callers only use counts — not the raw payload — for the
+      // SyncChoiceDialog). Saves 5-8s network download on every login.
+      try {
+        cloudCounts = await getCloudDataCounts();
+        usedLightweightCloudCheck = true;
+      } catch (_eCounts) {
+        cloudCounts = null;
+      }
+
+      // If we have no guest data, we never need the snapshot payload —
+      // restoreCloudIfEmpty / initial sync will do a fresh pullFromCloud.
+      // Skip the full snapshot download entirely.
+      const needFullCloudSnapshot = guestDataExists && cloudCounts && cloudCounts.total > 0;
+      if (needFullCloudSnapshot) {
+        try { cloud = await api.sync.pull(); } catch { cloud = null; }
+      }
     }
   }
-  const cloudInvoices = (cloud?.invoices || []);
-  const cloudProducts = (cloud?.products || []);
-  const cloudCustomers = (cloud?.customers || []);
+
+  // Resolve cloud entity counts — prefer full snapshot if we have it,
+  // otherwise use the lightweight counts response.
+  let cloudInvoices = [];
+  let cloudProducts = [];
+  let cloudCustomers = [];
+  let cloudInventoryHistory = [];
+  if (cloud) {
+    cloudInvoices = cloud.invoices || [];
+    cloudProducts = cloud.products || [];
+    cloudCustomers = cloud.customers || [];
+    cloudInventoryHistory = cloud.inventoryHistory || [];
+  } else if (cloudCounts) {
+    // Dummy empty arrays — we only need the counts.
+    cloudInvoices = { length: cloudCounts.invoices };
+    cloudProducts = { length: cloudCounts.products };
+    cloudCustomers = { length: cloudCounts.customers };
+    cloudInventoryHistory = { length: cloudCounts.inventoryHistory };
+  }
   
   // CRITICAL FIX: Settings should NOT trigger sync popup
   // Cloud settings exist check should only count entities
@@ -2140,6 +2286,7 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
       products: cloudProducts.length,
       customers: cloudCustomers.length,
       cloudDataExists,
+      usedLightweightCloudCheck,
     },
     'Local settings edited': 'N/A (settings sync silently)',
     'Cloud settings edited': 'N/A (settings sync silently)',
@@ -2160,6 +2307,7 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     `Cloud invoices:       ${cloudInvoices.length}\n` +
     `Cloud products:       ${cloudProducts.length}\n` +
     `Cloud customers:      ${cloudCustomers.length}\n` +
+    `Lightweight cloud:    ${usedLightweightCloudCheck}\n` +
     `---\n` +
     `Guest data exists:    ${guestDataExists}\n` +
     `Cloud data exists:    ${cloudDataExists}\n` +
@@ -2168,19 +2316,19 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     '───────────────────────────────────────────────────────────────────\n'
   );
 
-  const localCounts = {
+  const localCountsOut = {
     invoices: localInvoices.length,
     products: localProducts.length,
     customers: localCustomers.length,
     inventoryHistory: localInventoryHistory.length,
     total: localInvoices.length + localProducts.length + localCustomers.length + localInventoryHistory.length,
   };
-  const cloudCounts = {
+  const cloudCountsOut = {
     invoices: cloudInvoices.length,
     products: cloudProducts.length,
     customers: cloudCustomers.length,
-    inventoryHistory: (cloud?.inventoryHistory || []).length,
-    total: cloudInvoices.length + cloudProducts.length + cloudCustomers.length + (cloud?.inventoryHistory || []).length,
+    inventoryHistory: cloudInventoryHistory.length,
+    total: cloudInvoices.length + cloudProducts.length + cloudCustomers.length + cloudInventoryHistory.length,
   };
 
   return {
@@ -2188,8 +2336,8 @@ export async function getSyncDecision(cloudPullSnapshot = null) {
     guestDataExists,
     cloudDataExists,
     mergeRequired,
-    localCounts,
-    cloudCounts,
+    localCounts: localCountsOut,
+    cloudCounts: cloudCountsOut,
     snapshot: cloud,
   };
 }

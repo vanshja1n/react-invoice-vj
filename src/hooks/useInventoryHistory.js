@@ -50,12 +50,9 @@ export function useInventoryHistory() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const handler = () => silentFetch();
     const handlerData = () => silentFetch();
-    window.addEventListener('inventory-updated', handler);
     window.addEventListener('data-refreshed', handlerData);
     return () => {
-      window.removeEventListener('inventory-updated', handler);
       window.removeEventListener('data-refreshed', handlerData);
     };
   }, [silentFetch]);
