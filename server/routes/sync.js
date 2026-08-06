@@ -11,17 +11,118 @@ const router = Router();
 
 router.use(authenticateToken);
 
+/* =============================================================
+ * GET /api/sync/counts
+ * Lightweight endpoint — returns record counts only.
+ * Used by the client to cheaply check if cloud has changed
+ * without downloading all data.
+ * ============================================================= */
+router.get('/counts', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [invoices, products, customers, inventoryHistory] = await Promise.all([
+      Invoice.countDocuments({ userId, deletedAt: { $exists: false } }),
+      Product.countDocuments({ userId, deletedAt: { $exists: false } }),
+      Customer.countDocuments({ userId, deletedAt: { $exists: false } }),
+      InventoryHistory.countDocuments({ userId }),
+    ]);
+    res.json({
+      invoices,
+      products,
+      customers,
+      inventoryHistory,
+      total: invoices + products + customers + inventoryHistory,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Sync counts error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/* =============================================================
+ * GET /api/sync?since=<ISO-timestamp>
+ * Incremental pull: returns only records modified after `since`.
+ * Also returns soft-deleted records (deletedAt set) so client
+ * can remove them from IndexedDB.
+ * Falls back to full pull when `since` is absent (preserved
+ * backward-compat path for initial sync and old clients).
+ * ============================================================= */
 router.get('/', async (req, res) => {
   try {
+    const userId = req.user.id;
+    const since = req.query.since;
+
+    // ── Incremental pull path ──────────────────────────────────
+    if (since) {
+      const sinceDate = since; // stored as ISO string in MongoDB
+
+      // Validate the timestamp
+      if (isNaN(Date.parse(sinceDate))) {
+        return res.status(400).json({ error: 'Invalid `since` timestamp' });
+      }
+
+      const [invoices, products, customers, inventoryHistory, settings] = await Promise.all([
+        // Return records updated after `since` (including soft-deleted ones)
+        Invoice.find({
+          userId,
+          $or: [
+            { updatedAt: { $gt: sinceDate } },
+            { deletedAt: { $gt: sinceDate } },
+          ],
+        }).sort({ updatedAt: 1 }).lean(),
+
+        Product.find({
+          userId,
+          $or: [
+            { updatedAt: { $gt: sinceDate } },
+            { deletedAt: { $gt: sinceDate } },
+          ],
+        }).sort({ updatedAt: 1 }).lean(),
+
+        Customer.find({
+          userId,
+          $or: [
+            { updatedAt: { $gt: sinceDate } },
+            { deletedAt: { $gt: sinceDate } },
+          ],
+        }).sort({ updatedAt: 1 }).lean(),
+
+        InventoryHistory.find({
+          userId,
+          $or: [
+            { updatedAt: { $gt: sinceDate } },
+            { createdAt: { $gt: sinceDate } },
+          ],
+        }).sort({ createdAt: 1 }).lean(),
+
+        Settings.findOne({ userId }).lean(),
+      ]);
+
+      return res.json({
+        incremental: true,
+        since: sinceDate,
+        version: 3,
+        exportedAt: new Date().toISOString(),
+        invoices,
+        products,
+        customers,
+        inventoryHistory,
+        settings: settings || {},
+      });
+    }
+
+    // ── Full snapshot pull (backward-compat, initial sync) ─────
     const [invoices, products, customers, inventoryHistory, settings] = await Promise.all([
-      Invoice.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean(),
-      Product.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean(),
-      Customer.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean(),
-      InventoryHistory.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean(),
-      Settings.findOne({ userId: req.user.id }).lean(),
+      Invoice.find({ userId }).sort({ createdAt: -1 }).lean(),
+      Product.find({ userId }).sort({ createdAt: -1 }).lean(),
+      Customer.find({ userId }).sort({ createdAt: -1 }).lean(),
+      InventoryHistory.find({ userId }).sort({ createdAt: -1 }).lean(),
+      Settings.findOne({ userId }).lean(),
     ]);
 
     res.json({
+      incremental: false,
       version: 3,
       exportedAt: new Date().toISOString(),
       invoices,
@@ -36,6 +137,11 @@ router.get('/', async (req, res) => {
   }
 });
 
+/* =============================================================
+ * POST /api/sync/push
+ * Full workspace push — PRESERVED EXACTLY AS BEFORE.
+ * Used by initial sync flows (pushLocalToCloud, mergeLocalAndCloud).
+ * ============================================================= */
 function buildDocsForPush(items, userId, now, includeUpdatedAt = true) {
   const strip = (doc) => {
     const { _id, __v, userId: _uid, ...rest } = doc;

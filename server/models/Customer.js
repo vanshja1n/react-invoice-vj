@@ -20,11 +20,14 @@ const customerSchema = new mongoose.Schema({
   notes: String, // Added for customer notes
   createdAt: String,
   updatedAt: String,
+  deletedAt: String,   // soft-delete support for incremental sync
 }, {
   timestamps: false,
 });
 
 customerSchema.index({ userId: 1, createdAt: -1 });
 customerSchema.index({ userId: 1, email: 1 }, { sparse: true });
+// Incremental sync: efficient range query by last-modified timestamp
+customerSchema.index({ userId: 1, updatedAt: 1 });
 
 export default mongoose.model('Customer', customerSchema);

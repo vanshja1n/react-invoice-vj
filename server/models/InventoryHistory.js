@@ -16,6 +16,8 @@ const inventoryHistorySchema = new mongoose.Schema({
   newStock: Number,
   reference: String,
   createdAt: String,
+  updatedAt: String,   // added for incremental sync support
+  deletedAt: String,   // soft-delete support
 }, {
   timestamps: false,
 });
@@ -23,5 +25,7 @@ const inventoryHistorySchema = new mongoose.Schema({
 inventoryHistorySchema.index({ userId: 1, createdAt: -1 });
 inventoryHistorySchema.index({ userId: 1, productId: 1 });
 inventoryHistorySchema.index({ userId: 1, action: 1 });
+// Incremental sync: efficient range query by last-modified timestamp
+inventoryHistorySchema.index({ userId: 1, updatedAt: 1 });
 
 export default mongoose.model('InventoryHistory', inventoryHistorySchema);

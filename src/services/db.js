@@ -107,6 +107,15 @@ db.version(3).stores({
   inventoryHistory: '++id, productId, action, reference, createdAt',
 });
 
+// v4 — Incremental sync: index updatedAt + deletedAt for efficient partial pulls.
+// Dexie rebuilds the indexes only; all existing records are preserved.
+db.version(4).stores({
+  invoices: '++id, invoiceNumber, status, clientName, companyName, amount, customerId, createdAt, updatedAt, deletedAt',
+  products: '++id, name, sku, category, sellingPrice, currentStock, createdAt, updatedAt, deletedAt',
+  customers: '++id, name, phone, email, createdAt, updatedAt, deletedAt',
+  inventoryHistory: '++id, productId, action, reference, createdAt, updatedAt',
+});
+
 export default db;
 
 // ─── Invoice CRUD ───────────────────────────────────────

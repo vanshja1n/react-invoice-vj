@@ -25,6 +25,7 @@ const productSchema = new mongoose.Schema({
   hsnCode: String,
   createdAt: String,
   updatedAt: String,
+  deletedAt: String,   // soft-delete support for incremental sync
 }, {
   timestamps: false,
 });
@@ -32,5 +33,7 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ userId: 1, createdAt: -1 });
 productSchema.index({ userId: 1, category: 1 });
 productSchema.index({ userId: 1, sku: 1 }, { sparse: true });
+// Incremental sync: efficient range query by last-modified timestamp
+productSchema.index({ userId: 1, updatedAt: 1 });
 
 export default mongoose.model('Product', productSchema);

@@ -12,6 +12,10 @@ const SETTINGS_KEY = 'invoicehub_settings';
 const SYNC_LOCK_KEY = 'invoicehub_sync_lock_pending';
 const CLEAR_PENDING_KEY = 'invoicehub_clear_pending_ts';
 const LAST_CLEARED_KEY = 'invoicehub_last_cleared_ts';
+// Incremental sync state keys
+const LAST_SYNC_TS_KEY = 'invoicehub_last_sync_ts';          // ISO timestamp of last successful incremental pull
+const CLOUD_COUNTS_CACHE_KEY = 'invoicehub_cloud_counts_cache'; // JSON: {counts, ts}
+const CLOUD_COUNTS_TTL_MS = 60_000;                           // 1-minute cache TTL for counts
 const idFromRemoteRegex = /^[0-9a-fA-F]{24}$/;
 
 const LOG_TAG = '[InvoiceHub Sync]';
@@ -157,23 +161,90 @@ export async function getLocalDataCounts() {
   }
 }
 
-export async function getCloudDataCounts() {
+/* =============================================================
+ * INCREMENTAL SYNC HELPERS: last sync timestamp + cloud counts cache
+ * ============================================================= */
+
+/** Read the ISO timestamp of the last successful incremental pull. */
+export function getLastSyncTs() {
+  try {
+    return localStorage.getItem(LAST_SYNC_TS_KEY) || null;
+  } catch { return null; }
+}
+
+/** Persist the ISO timestamp after a successful incremental pull. */
+export function setLastSyncTs(ts) {
+  try {
+    if (ts) {
+      localStorage.setItem(LAST_SYNC_TS_KEY, ts);
+    } else {
+      localStorage.removeItem(LAST_SYNC_TS_KEY);
+    }
+  } catch { void 0; }
+}
+
+/** Clear the last sync timestamp (e.g. on logout, clear-all). */
+export function clearLastSyncTs() {
+  try { localStorage.removeItem(LAST_SYNC_TS_KEY); } catch { void 0; }
+}
+
+/**
+ * Get cloud record counts.
+ * Uses GET /api/sync/counts (lightweight — no data payload) and caches the
+ * result for CLOUD_COUNTS_TTL_MS to avoid hammering the server.
+ * The old implementation called api.sync.pull() (full snapshot) just to count —
+ * that is now replaced.
+ */
+export async function getCloudDataCounts(opts = {}) {
+  const { bustCache = false } = opts;
   if (!isAuthenticated() || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return { invoices: 0, products: 0, customers: 0, inventoryHistory: 0, total: 0 };
   }
+  // Check cache first
+  if (!bustCache) {
+    try {
+      const raw = localStorage.getItem(CLOUD_COUNTS_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && cached.ts && (Date.now() - cached.ts) < CLOUD_COUNTS_TTL_MS) {
+          _log('info', 'CLOUD-COUNTS', `Returning cached counts (age=${Date.now() - cached.ts}ms).`);
+          return cached.counts;
+        }
+      }
+    } catch { void 0; }
+  }
   try {
-    const data = await api.sync.pull();
-    return {
-      invoices: (data.invoices || []).length,
-      products: (data.products || []).length,
-      customers: (data.customers || []).length,
-      inventoryHistory: (data.inventoryHistory || []).length,
-      total: (data.invoices || []).length + (data.products || []).length + (data.customers || []).length + (data.inventoryHistory || []).length,
-    };
+    // Use the lightweight /sync/counts endpoint; fall back to full pull if endpoint not available (old server).
+    let counts;
+    try {
+      counts = await api.sync.counts();
+    } catch (countErr) {
+      // Fallback: old server without /sync/counts — use full pull
+      _log('warn', 'CLOUD-COUNTS', 'GET /sync/counts failed — falling back to full pull for counts.', countErr?.message);
+      const data = await api.sync.pull();
+      counts = {
+        invoices: (data.invoices || []).length,
+        products: (data.products || []).length,
+        customers: (data.customers || []).length,
+        inventoryHistory: (data.inventoryHistory || []).length,
+        total: (data.invoices || []).length + (data.products || []).length + (data.customers || []).length + (data.inventoryHistory || []).length,
+      };
+    }
+    // Cache the result
+    try {
+      localStorage.setItem(CLOUD_COUNTS_CACHE_KEY, JSON.stringify({ counts, ts: Date.now() }));
+    } catch { void 0; }
+    return counts;
   } catch {
     return { invoices: 0, products: 0, customers: 0, inventoryHistory: 0, total: 0 };
   }
 }
+
+/** Invalidate the cloud counts cache (call after a successful push or pull). */
+function _invalidateCloudCountsCache() {
+  try { localStorage.removeItem(CLOUD_COUNTS_CACHE_KEY); } catch { void 0; }
+}
+
 
 export function getSyncStrategy() {
   return localStorage.getItem(SYNC_STRATEGY_KEY) || null;
@@ -1331,8 +1402,12 @@ export async function clearWorkspaceForLogout() {
   try { localStorage.removeItem(SYNC_STRATEGY_KEY); } catch { void 0; }
   try { localStorage.removeItem(CLEAR_PENDING_KEY); } catch { void 0; }
   try { localStorage.removeItem(LAST_CLEARED_KEY); } catch { void 0; }
+  // Incremental sync state: clear watermark and counts cache on logout
+  try { localStorage.removeItem(LAST_SYNC_TS_KEY); } catch { void 0; }
+  try { localStorage.removeItem(CLOUD_COUNTS_CACHE_KEY); } catch { void 0; }
   try { setSyncChoiceLock(false); } catch { void 0; }
   _log('info', 'LOGOUT-WIPE', 'Logout wipe complete.');
+
 }
 
 export async function isCloudEmpty() {
@@ -1680,8 +1755,175 @@ export function getLastClearedAt() {
 }
 
 /* =============================================================
+ * SECTION 8b: INCREMENTAL PULL FROM CLOUD
+ * Replaces the full clear()+bulkAdd() snapshot in the engine tick.
+ * Only downloads records changed since lastSyncTs.
+ * Uses bulkPut() — never clears IndexedDB except on initial sync
+ * (handled by pullFromCloud which is still used for merge/login flows).
+ * ============================================================= */
+export async function incrementalPullFromCloud(opts = {}) {
+  const { force = false } = opts;
+  if (!isAuthenticated()) return { changed: 0 };
+  if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('OFFLINE');
+
+  if (!force && isSyncChoiceLocked()) {
+    _log('warn', 'INCR-PULL', 'ABORTED: sync choice is locked.');
+    throw new Error('SYNC_LOCKED');
+  }
+  if (!force) {
+    const unresolved = await isSyncChoiceUnresolved();
+    if (unresolved) {
+      _log('warn', 'INCR-PULL', 'ABORTED: sync strategy unresolved.');
+      throw new Error('SYNC_LOCKED');
+    }
+  }
+
+  const clearPendingTs = (() => {
+    try {
+      const raw = localStorage.getItem(CLEAR_PENDING_KEY);
+      return raw ? Number(raw) || 0 : 0;
+    } catch { return 0; }
+  })();
+  if (clearPendingTs > 0 && !force) {
+    _log('warn', 'INCR-PULL', 'ABORTED: Delete All Data pending.');
+    throw new Error('CLEAR_PENDING');
+  }
+
+  // Must drain non-clear queue ops before pulling to avoid overwriting them
+  if (!force) {
+    const q = getQueue();
+    const hasPendingNonClear = q.some((it) => !_isClearOp(it));
+    if (hasPendingNonClear) {
+      _log('warn', 'INCR-PULL', `ABORTED: queue still has ${q.length} pending op(s). Run processQueue first.`);
+      throw new Error('QUEUE_NOT_DRAINED');
+    }
+  }
+
+  const lockToken = acquireSyncLock('incrementalPullFromCloud');
+  if (lockToken === null) return { changed: 0 };
+
+  try {
+    const lastSyncTs = getLastSyncTs();
+    _log('info', 'INCR-PULL', `START — lastSyncTs=${lastSyncTs || 'none (will do full pull)'}.`);
+
+    const data = await api.sync.pullIncremental(lastSyncTs);
+
+    const invCount = (data.invoices || []).length;
+    const prodCount = (data.products || []).length;
+    const custCount = (data.customers || []).length;
+    const invHistCount = (data.inventoryHistory || []).length;
+    const isFullSnapshot = !data.incremental;
+
+    _log('info', 'INCR-PULL-SNAPSHOT', `incremental=${data.incremental}, inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}.`);
+
+    // If server returned a full snapshot (no `since` was sent or server is old),
+    // fall back to the existing full-snapshot pull logic to stay correct.
+    if (isFullSnapshot && lastSyncTs === null) {
+      // First-ever sync: use the full-snapshot path (same as initial load-cloud)
+      _log('info', 'INCR-PULL', 'No lastSyncTs — delegating to full pullFromCloud for initial load.');
+      releaseSyncLock(lockToken, 'incrementalPullFromCloud');
+      await pullFromCloud({ force });
+      setLastSyncTs(new Date().toISOString());
+      _invalidateCloudCountsCache();
+      return { changed: -1, fullPull: true };
+    }
+
+    const db = (await import('@/services/db')).default;
+    const { saveSettingsSilent, getSettings: _getSettings, DEFAULT_SETTINGS } = await import('@/services/settings');
+
+    // Helper: map a MongoDB doc to Dexie-compatible record (same as pullFromCloud)
+    const safeNum = (v, fallback = 0) => {
+      if (v === null || v === undefined) return fallback;
+      if (typeof v === 'string' && v.trim() === '') return fallback;
+      const n = parseFloat(v);
+      return isNaN(n) ? fallback : n;
+    };
+
+    const toId = (doc) => {
+      if (!doc) return doc;
+      const { _id, __v, userId: _uid, ...rest } = doc;
+      void _uid;
+      if (rest.items && Array.isArray(rest.items)) {
+        rest.items = rest.items.map(item => {
+          const { price, tax, unit, ...itemRest } = item;
+          return {
+            ...itemRest,
+            price: safeNum(price),
+            tax: safeNum(tax),
+            unit: (unit !== undefined && unit !== null) ? unit : 'pcs',
+          };
+        });
+      }
+      if (rest.gstNumber !== undefined && !rest.companyGst) {
+        rest.companyGst = rest.gstNumber;
+      }
+      return { ...rest, id: _id };
+    };
+
+    const mappedInvoices = (data.invoices || []).map(toId);
+    const mappedProducts = (data.products || []).map(toId);
+    const mappedCustomers = (data.customers || []).map(toId);
+    const mappedInventory = (data.inventoryHistory || []).map(toId);
+
+    // Separate changed records from soft-deleted records
+    const partitionDeleted = (records) => ({
+      toUpsert: records.filter(r => !r.deletedAt),
+      toDelete: records.filter(r => !!r.deletedAt).map(r => normalizeId(r.id)),
+    });
+
+    const inv = partitionDeleted(mappedInvoices);
+    const prod = partitionDeleted(mappedProducts);
+    const cust = partitionDeleted(mappedCustomers);
+    const invHist = partitionDeleted(mappedInventory);
+
+    let changed = 0;
+
+    // Apply changes using bulkPut (upsert) — NEVER clear()
+    await db.transaction('rw', db.invoices, db.products, db.customers, db.inventoryHistory, async () => {
+      // Upsert changed records
+      if (inv.toUpsert.length)    { await db.invoices.bulkPut(inv.toUpsert);          changed += inv.toUpsert.length; }
+      if (prod.toUpsert.length)   { await db.products.bulkPut(prod.toUpsert);          changed += prod.toUpsert.length; }
+      if (cust.toUpsert.length)   { await db.customers.bulkPut(cust.toUpsert);         changed += cust.toUpsert.length; }
+      if (invHist.toUpsert.length){ await db.inventoryHistory.bulkPut(invHist.toUpsert); changed += invHist.toUpsert.length; }
+
+      // Hard-delete soft-deleted records from IndexedDB
+      if (inv.toDelete.length)    { await db.invoices.bulkDelete(inv.toDelete);         changed += inv.toDelete.length; }
+      if (prod.toDelete.length)   { await db.products.bulkDelete(prod.toDelete);         changed += prod.toDelete.length; }
+      if (cust.toDelete.length)   { await db.customers.bulkDelete(cust.toDelete);        changed += cust.toDelete.length; }
+    });
+
+    // Apply settings if present (same conflict logic as pullFromCloud)
+    const hasSettings = !!(data.settings && Object.keys(data.settings).length > 0);
+    if (hasSettings) {
+      const { _id, __v, userId: _suid, ...settingsRest } = data.settings;
+      void _suid;
+      const cloudHasData = Object.keys(settingsRest).some(key => {
+        const val = settingsRest[key];
+        return val !== null && val !== undefined && val !== '' && val !== 0;
+      });
+      if (cloudHasData) {
+        saveSettingsSilent(settingsRest);
+        _log('info', 'INCR-PULL-SETTINGS', 'Settings applied from incremental pull.');
+        changed++;
+      }
+    }
+
+    // Advance the watermark to now (server returned records up to now)
+    const newSyncTs = data.exportedAt || new Date().toISOString();
+    setLastSyncTs(newSyncTs);
+    _invalidateCloudCountsCache();
+
+    _log('info', 'INCR-PULL', `COMPLETE — bulkPut upserted/deleted=${changed} records (inv=${invCount}, prod=${prodCount}, cust=${custCount}, invHist=${invHistCount}). New watermark=${newSyncTs}.`);
+    return { changed, newSyncTs, fullPull: false };
+  } finally {
+    releaseSyncLock(lockToken, 'incrementalPullFromCloud');
+  }
+}
+
+/* =============================================================
  * SECTION 9: SINGLETON SYNC ENGINE — guarantees exactly one interval loop
  * ============================================================= */
+
 const _singleton = {
   intervalId: null,
   startedAt: 0,
@@ -1739,11 +1981,13 @@ export function startSyncEngine(intervalMs = 10000) {
       const pullDue = (Date.now() - _singleton.lastPullAt) >= MIN_PULL_INTERVAL_MS;
 
       let pulled = false;
+      let changedCount = 0;
       if (queueDrained && pullDue) {
         try {
-          await pullFromCloud();
+          const res = await incrementalPullFromCloud();
           _singleton.lastPullAt = Date.now();
           pulled = true;
+          changedCount = res ? (res.changed || 0) : 0;
         } catch (_err) {
           // QUEUE_NOT_DRAINED, SYNC_LOCKED, OFFLINE, etc. — all safe to ignore here.
           void _err;
@@ -1752,8 +1996,8 @@ export function startSyncEngine(intervalMs = 10000) {
         _log('info', 'ENGINE', `Pull skipped — queueDrained=${queueDrained}, pullDue=${pullDue} (lastPull=${_singleton.lastPullAt ? new Date(_singleton.lastPullAt).toISOString() : 'never'}).`);
       }
 
-      _log('info', 'ENGINE', `Tick done. remaining=${remaining}, pulled=${pulled}.`);
-      if (remaining > 0 || pulled) {
+      _log('info', 'ENGINE', `Tick done. remaining=${remaining}, pulled=${pulled}, changedCount=${changedCount}.`);
+      if (remaining > 0 || (pulled && changedCount !== 0)) {
         dispatchDataRefreshed();
       }
     } catch (err) {
@@ -1762,6 +2006,18 @@ export function startSyncEngine(intervalMs = 10000) {
   };
 
   _singleton.intervalId = setInterval(tick, intervalMs);
+
+  // Set up visibilitychange handler to immediately trigger an incremental check when user switches back to tab
+  if (typeof window !== 'undefined' && typeof document !== 'undefined' && !_singleton.visibilityListenerAdded) {
+    _singleton.visibilityListenerAdded = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && isAuthenticated() && !isSyncLocked()) {
+        _log('info', 'ENGINE-VISIBILITY', 'Tab became visible — scheduling immediate queue drain and incremental sync.');
+        debouncedProcessQueueFromQueueChanged(200);
+      }
+    });
+  }
+
   void tick();
   _log('info', 'ENGINE', `STARTED singleton sync engine (interval=${intervalMs}ms, pid=${_singleton.startedAt}).`);
   return true;

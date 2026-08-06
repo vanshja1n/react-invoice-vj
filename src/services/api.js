@@ -183,7 +183,13 @@ export const api = {
     get: () => request('/subscriptions'),
   },
   sync: {
+    // Full snapshot pull — used by initial sync flows (merge, push, pull-all)
     pull: () => request('/sync'),
+    // Incremental pull — returns only records changed since `since` (ISO timestamp)
+    // Falls back to full pull on server side when since is falsy
+    pullIncremental: (since) => request(since ? `/sync?since=${encodeURIComponent(since)}` : '/sync'),
+    // Lightweight counts — no data payload, just totals per entity
+    counts: () => request('/sync/counts'),
     push: (data) => request('/sync/push', { method: 'POST', body: data }),
   },
 };

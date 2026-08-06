@@ -55,6 +55,7 @@ const invoiceSchema = new mongoose.Schema({
   signature: String,
   createdAt: String,
   updatedAt: String,
+  deletedAt: String,   // soft-delete support for incremental sync
 }, {
   timestamps: false,
 });
@@ -62,5 +63,7 @@ const invoiceSchema = new mongoose.Schema({
 invoiceSchema.index({ userId: 1, createdAt: -1 });
 invoiceSchema.index({ userId: 1, invoiceNumber: 1 });
 invoiceSchema.index({ userId: 1, status: 1 });
+// Incremental sync: efficient range query by last-modified timestamp
+invoiceSchema.index({ userId: 1, updatedAt: 1 });
 
 export default mongoose.model('Invoice', invoiceSchema);
